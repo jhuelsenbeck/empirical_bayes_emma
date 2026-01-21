@@ -1,0 +1,566 @@
+#include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <istream>
+#include <sstream>
+#include "Alignment.hpp"
+#include "Msg.hpp"
+#include "nxsmultiformat.h"
+#include "UserSettings.hpp"
+
+
+
+Alignment::Alignment(std::string fileName) {
+
+    MultiFormatReader nexusReader;
+    const char* fn = fileName.c_str();
+    nexusReader.ReadFilepath(fn, MultiFormatReader::NEXUS_FORMAT);
+
+    size_t num_taxaBlocks = nexusReader.GetNumTaxaBlocks();
+    for (unsigned tBlck=0; tBlck<num_taxaBlocks; ++tBlck)
+        {
+        NxsTaxaBlock* taxaBlock = nexusReader.GetTaxaBlock(tBlck);
+        std::string taxaBlockTitle          = taxaBlock->GetTitle();
+        const unsigned nCharBlocks          = nexusReader.GetNumCharactersBlocks(taxaBlock);
+        const unsigned nUnalignedCharBlocks = nexusReader.GetNumUnalignedBlocks(taxaBlock);
+        
+        // make alignment objects
+        for (unsigned cBlck=0; cBlck<nCharBlocks; cBlck++)
+            {
+            NxsCharactersBlock* charBlock = nexusReader.GetCharactersBlock(taxaBlock, cBlck);
+            std::string charBlockTitle = taxaBlock->GetTitle();
+            int dt = charBlock->GetDataType();
+            if (dt == NxsCharactersBlock::dna || dt == NxsCharactersBlock::nucleotide)
+                {
+                createDnaMatrix(charBlock);
+                }
+            else if (dt == NxsCharactersBlock::rna)
+                {
+                //createRnaMatrix(charBlock);
+                }
+            else if (dt == NxsCharactersBlock::protein)
+                {
+                //m = createAminoAcidMatrix(charBlock);
+                }
+            else if (dt == NxsCharactersBlock::standard)
+                {
+                //m = createStandardMatrix(charBlock);
+                }
+            else if (dt == NxsCharactersBlock::continuous)
+                {
+                //m = createContinuousMatrix(charBlock);
+                }
+            else if (dt == NxsCharactersBlock::mixed)
+                {
+                //addWarning("Mixed data types are not allowed");
+                }
+            else
+                {
+                //addWarning("Unknown data type");
+                }
+            
+        }
+        
+    }
+    
+    //print();
+}
+
+Alignment::Alignment(std::vector<std::string> tn, int nr, int nc) {
+
+    taxonNames = tn;
+    numTaxa = (int)taxonNames.size();
+    numNucleotideSites = nc;
+
+    // instantiate the character matrix
+    matrix = new int*[nr];
+    matrix[0] = new int[nr * numNucleotideSites];
+    for (size_t i=1; i<nr; i++)
+        matrix[i] = matrix[i-1] + numNucleotideSites;
+    for (size_t i=0; i<nr; i++)
+        for (size_t j=0; j<numNucleotideSites; j++)
+            matrix[i][j] = 0;
+}
+
+Alignment::~Alignment(void) {
+
+    delete [] matrix[0];
+    delete [] matrix;
+}
+
+void Alignment::createDnaMatrix(NxsCharactersBlock* charblock) {
+    
+    if ( charblock == NULL )
+        {
+        //throw RbException("Trying to create an DNA matrix from a NULL pointer.");
+        }
+    
+    // check that the character block is of the correct type
+    if ( charblock->GetDataType() != NxsCharactersBlock::dna )
+        {
+        std::cout << "Could not read in data matrix of type DNA because the nexus files says the type is:" << std::endl;
+        switch ( charblock->GetDataType() )
+        {
+        case 1:
+            std::cout << "Standard" << std::endl;
+            break;
+                
+        case 2:
+            std::cout << "DNA" << std::endl;
+            break;
+                
+        case 3:
+            std::cout << "RNA" << std::endl;
+            break;
+                
+        case 4:
+            std::cout << "Nucleotide" << std::endl;
+            break;
+                
+        case 5:
+            std::cout << "Protein" << std::endl;
+            break;
+                
+        case 6:
+            std::cout << "Continuous" << std::endl;
+            break;
+                
+        case 7:
+            std::cout << "Codon" << std::endl;
+            break;
+                
+        case 8:
+            std::cout << "Mixed" << std::endl;
+            break;
+                
+        default:
+            std::cout << "Unknown" << std::endl;
+            break;
+        }
+    }
+    
+    // get the set of characters (and the number of taxa)
+    NxsUnsignedSet charset;
+    for (unsigned int i=0; i<charblock->GetNumChar(); i++)
+        charset.insert(i);
+    
+    unsigned numOrigTaxa = charblock->GetNTax();
+    numTaxa = charblock->GetNTax();
+    numNucleotideSites = charblock->GetNumChar();
+    
+    // get the set of excluded characters
+    NxsUnsignedSet excluded = charblock->GetExcludedIndexSet();
+    
+    // instantiate the character matrix
+    matrix = new int*[numTaxa];
+    matrix[0] = new int[numTaxa * numNucleotideSites];
+    for (size_t i=1; i<numTaxa; i++)
+        matrix[i] = matrix[i-1] + numNucleotideSites;
+    for (size_t i=0; i<numTaxa; i++)
+        for (size_t j=0; j<numNucleotideSites; j++)
+            matrix[i][j] = 0;
+    std::cout << "   * Alignment has " << numTaxa << " taxa and " << numNucleotideSites << " nucleotide sites" << std::endl;
+
+    // read in the data, including taxon names
+    for (unsigned origTaxIndex=0; origTaxIndex<numOrigTaxa; origTaxIndex++)
+        {
+        // add the taxon name
+        NxsString   tLabel = charblock->GetTaxonLabel(origTaxIndex);
+        std::string tName  = NxsString::GetEscaped(tLabel).c_str();
+        
+        taxonNames.push_back(tName);
+        
+        std::vector<std::string> tokens;
+                
+        // add the sequence information for the sequence associated with the taxon
+        for (NxsUnsignedSet::iterator cit = charset.begin(); cit != charset.end(); cit++)
+            {
+            // add the character state to the matrix
+            char site = charblock->GetState(origTaxIndex, *cit);
+            matrix[origTaxIndex][*cit] = nucID(site);
+            }
+        
+        }
+    
+    //setExcluded( charblock, cMat );
+}
+
+int Alignment::getNucleotide(size_t i, size_t j) {
+
+    return matrix[i][j];
+}
+
+int Alignment::getNumSites(void) {
+
+    return numNucleotideSites;
+}
+
+int Alignment::getNumStates(void) {
+
+    return 4;
+}
+
+std::vector<std::string> Alignment::getTaxonNames(void) {
+
+    return taxonNames;
+}
+
+/*-------------------------------------------------------------------
+|
+|   GetPossibleNucs: 
+|
+|   This function initializes a vector, nuc[MAX_NUM_STATES]. The four elements
+|   of nuc correspond to the four nucleotides in alphabetical order.
+|   We are assuming that the nucCode is a binary representation of
+|   the nucleotides that are consistent with the observation. For
+|   example, if we observe an A, then the nucCode is 1 and the 
+|   function initalizes nuc[0] = 1 and the other elements of nuc
+|   to be 0.
+|
+|   Observation    nucCode        nuc
+|        A            1           1000
+|        C            2           0100
+|        G            4           0010
+|        T            8           0001
+|        R            5           1010
+|        Y           10           0101
+|        M            3           1100
+|        K           12           0011
+|        S            6           0110
+|        W            9           1001
+|        H           11           1101
+|        B           14           0111
+|        V            7           1110
+|        D           13           1011
+|        N - ?       15           1111
+|
+-------------------------------------------------------------------*/
+void Alignment::getPossibleNucs (int nucCode, int* nuc) {
+
+	if (nucCode == 1)
+		{
+		nuc[0] = 1;
+		nuc[1] = 0;
+		nuc[2] = 0;
+		nuc[3] = 0;
+		}
+	else if (nucCode == 2)
+		{
+		nuc[0] = 0;
+		nuc[1] = 1;
+		nuc[2] = 0;
+		nuc[3] = 0;
+		}
+	else if (nucCode == 3)
+		{
+		nuc[0] = 1;
+		nuc[1] = 1;
+		nuc[2] = 0;
+		nuc[3] = 0;
+		}
+	else if (nucCode == 4)
+		{
+		nuc[0] = 0;
+		nuc[1] = 0;
+		nuc[2] = 1;
+		nuc[3] = 0;
+		}
+	else if (nucCode == 5)
+		{
+		nuc[0] = 1;
+		nuc[1] = 0;
+		nuc[2] = 1;
+		nuc[3] = 0;
+		}
+	else if (nucCode == 6)
+		{
+		nuc[0] = 0;
+		nuc[1] = 1;
+		nuc[2] = 1;
+		nuc[3] = 0;
+		}
+	else if (nucCode == 7)
+		{
+		nuc[0] = 1;
+		nuc[1] = 1;
+		nuc[2] = 1;
+		nuc[3] = 0;
+		}
+	else if (nucCode == 8)
+		{
+		nuc[0] = 0;
+		nuc[1] = 0;
+		nuc[2] = 0;
+		nuc[3] = 1;
+		}
+	else if (nucCode == 9)
+		{
+		nuc[0] = 1;
+		nuc[1] = 0;
+		nuc[2] = 0;
+		nuc[3] = 1;
+		}
+	else if (nucCode == 10)
+		{
+		nuc[0] = 0;
+		nuc[1] = 1;
+		nuc[2] = 0;
+		nuc[3] = 1;
+		}
+	else if (nucCode == 11)
+		{
+		nuc[0] = 1;
+		nuc[1] = 1;
+		nuc[2] = 0;
+		nuc[3] = 1;
+		}
+	else if (nucCode == 12)
+		{
+		nuc[0] = 0;
+		nuc[1] = 0;
+		nuc[2] = 1;
+		nuc[3] = 1;
+		}
+	else if (nucCode == 13)
+		{
+		nuc[0] = 1;
+		nuc[1] = 0;
+		nuc[2] = 1;
+		nuc[3] = 1;
+		}
+	else if (nucCode == 14)
+		{
+		nuc[0] = 0;
+		nuc[1] = 1;
+		nuc[2] = 1;
+		nuc[3] = 1;
+		}
+	else if (nucCode == 15)
+		{
+		nuc[0] = 1;
+		nuc[1] = 1;
+		nuc[2] = 1;
+		nuc[3] = 1;
+		}
+	else if (nucCode == 16)
+		{
+		nuc[0] = 1;
+		nuc[1] = 1;
+		nuc[2] = 1;
+		nuc[3] = 1;
+		}
+}
+
+std::string Alignment::getTaxonName(int i) {
+
+	return taxonNames[i];
+}
+
+int Alignment::getTaxonIndex(std::string ns) {
+
+	int taxonIndex = -1;
+	int i = 0;
+	for (std::vector<std::string>::iterator p=taxonNames.begin(); p != taxonNames.end(); p++)
+		{
+		if ( (*p) == ns )
+			{
+			taxonIndex = i;
+			break;
+			}
+		i++;
+		}
+	return taxonIndex;
+}
+
+int Alignment::lengthOfLongestTaxonName(void) {
+
+    int len = 0;
+    for (int i=0,n=(int)taxonNames.size(); i<n; i++)
+        {
+        if (taxonNames[i].length() > len)
+            len = (int)taxonNames[i].length();
+        }
+    return len;
+}
+
+void Alignment::listTaxa(void) {
+
+	int i = 1;
+	for (std::vector<std::string>::iterator p=taxonNames.begin(); p != taxonNames.end(); p++)
+		std::cout << std::setw(4) << i++ << " -- " << (*p) << '\n';
+}
+
+/*-------------------------------------------------------------------
+|
+|   NucID: 
+|
+|   Take a character, nuc, and return an integer:
+|
+|       nuc        returns
+|        A            1 
+|        C            2     
+|        G            4      
+|        T U          8     
+|        R            5      
+|        Y           10       
+|        M            3      
+|        K           12   
+|        S            6     
+|        W            9      
+|        H           11      
+|        B           14     
+|        V            7      
+|        D           13  
+|        N - ?       15       
+|
+-------------------------------------------------------------------*/
+int Alignment::nucID(char nuc) {
+
+	char		n;
+	
+	if (nuc == 'U' || nuc == 'u')
+		n = 'T';
+	else
+		n = nuc;
+
+	if (n == 'A' || n == 'a')
+		{
+		return 1;
+		}
+	else if (n == 'C' || n == 'c')
+		{
+		return 2;
+		}
+	else if (n == 'G' || n == 'g')
+		{
+		return 4;
+		}
+	else if (n == 'T' || n == 't')
+		{
+		return 8;
+		}
+	else if (n == 'R' || n == 'r')
+		{
+		return 5;
+		}
+	else if (n == 'Y' || n == 'y')
+		{
+		return 10;
+		}
+	else if (n == 'M' || n == 'm')
+		{
+		return 3;
+		}
+	else if (n == 'K' || n == 'k')
+		{
+		return 12;
+		}
+	else if (n == 'S' || n == 's')
+		{
+		return 6;
+		}
+	else if (n == 'W' || n == 'w')
+		{
+		return 9;
+		}
+	else if (n == 'H' || n == 'h')
+		{
+		return 11;
+		}
+	else if (n == 'B' || n == 'b')
+		{
+		return 14;
+		}
+	else if (n == 'V' || n == 'v')
+		{
+		return 7;
+		}
+	else if (n == 'D' || n == 'd')
+		{
+		return 13;
+		}
+	else if (n == 'N' || n == 'n')
+		{
+		return 15;
+		}
+	else if (n == '-')
+		{
+		return 15;
+		}
+	else if (n == '?')
+		{
+		return 15;
+		}
+	else
+		return -1;
+}
+
+void Alignment::print(void) {
+
+    int** x = matrix;
+    int matrixSize = numNucleotideSites;
+        
+    std::cout << "        ";
+    for (size_t i=0; i<numTaxa; i++)
+        std::cout << std::setw(3) << i;
+    std::cout << '\n';
+    std::cout << "------------------------";
+    for (size_t i=0; i<numTaxa; i++)
+        std::cout << "---";
+    std::cout << '\n';
+    for (size_t j=0; j<matrixSize; j++)
+        {
+        std::cout << std::setw(4) << j+1 << " -- ";
+        for (size_t i=0; i<numTaxa; i++)
+            {
+            std::cout << std::setw(3) << x[i][j];
+            }
+        std::cout << '\n';
+        }
+}
+
+void Alignment::summarize(void) {
+    
+    int nucTypes[16];
+    for (int i=0; i<16; i++)
+        nucTypes[i] = 0;
+        
+    for (int i=0; i<numTaxa; i++)
+        for (int j=0; j<numNucleotideSites; j++)
+            nucTypes[ matrix[i][j] ]++;
+            
+    int sum = 0, maxNumDigits = 0;
+    for (int i=0; i<16; i++)
+        {
+        sum += nucTypes[i];
+        int nd = log((double)nucTypes[i]) / log(10.0) + 1;
+        if (nd > maxNumDigits)
+            maxNumDigits = nd;
+        }
+            
+    std::vector<std::string> ids;
+    ids.push_back("       ");  // 0
+    ids.push_back("A      ");  // 1
+    ids.push_back("C      ");  // 2
+    ids.push_back("A/C    ");  // 3
+    ids.push_back("G      ");  // 4
+    ids.push_back("A/G    ");  // 5
+    ids.push_back("C/G    ");  // 6
+    ids.push_back("A/C/G  ");  // 7
+    ids.push_back("T      ");  // 8
+    ids.push_back("A/T    ");  // 9
+    ids.push_back("C/T    ");  // 10
+    ids.push_back("A/C/T  ");  // 11
+    ids.push_back("G/T    ");  // 12
+    ids.push_back("A/G/T  ");  // 13
+    ids.push_back("C/G/T  ");  // 14
+    ids.push_back("A/C/G/T");  // 15
+
+    std::cout << "   * Data summary" << std::endl;
+    std::cout << "   * Number of taxa    = " << std::setw(maxNumDigits) << numTaxa << std::endl;
+    std::cout << "   * Number of sites   = " << std::setw(maxNumDigits) << numNucleotideSites << std::endl;
+
+    for (int i=1; i<16; i++)
+        std::cout << "   * Number of " << ids[i] << " = " << std::setw(maxNumDigits) << nucTypes[i] << " " << std::setw(7) << std::fixed << std::setprecision(4) << ((double)nucTypes[i]/sum) * 100.0 << "\%" << std::endl;
+}
