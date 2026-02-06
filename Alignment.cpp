@@ -4,14 +4,17 @@
 #include <iostream>
 #include <istream>
 #include <sstream>
+#include <map>
+
+#include "ncl.h"
 #include "Alignment.hpp"
 #include "Msg.hpp"
-#include "nxsmultiformat.h"
 #include "UserSettings.hpp"
 
 
 
-Alignment::Alignment(std::string fileName) {
+Alignment::Alignment(std::string fileName) : 
+    matrix(nullptr), patternCount(nullptr), numTaxa(0), numSites(0), isCompressed(false)  {
 
     MultiFormatReader nexusReader;
     const char* fn = fileName.c_str();
@@ -23,7 +26,6 @@ Alignment::Alignment(std::string fileName) {
         NxsTaxaBlock* taxaBlock = nexusReader.GetTaxaBlock(tBlck);
         std::string taxaBlockTitle          = taxaBlock->GetTitle();
         const unsigned nCharBlocks          = nexusReader.GetNumCharactersBlocks(taxaBlock);
-        const unsigned nUnalignedCharBlocks = nexusReader.GetNumUnalignedBlocks(taxaBlock);
         
         // make alignment objects
         for (unsigned cBlck=0; cBlck<nCharBlocks; cBlck++)
@@ -67,26 +69,144 @@ Alignment::Alignment(std::string fileName) {
     //print();
 }
 
-Alignment::Alignment(std::vector<std::string> tn, int nr, int nc) {
+Alignment::Alignment(std::vector<std::string> tn, int nr, int nc) : 
+    matrix(nullptr), patternCount(nullptr), numTaxa(0), numSites(0), isCompressed(false) {
 
     taxonNames = tn;
     numTaxa = (int)taxonNames.size();
-    numNucleotideSites = nc;
+    numSites = nc;
 
     // instantiate the character matrix
     matrix = new int*[nr];
-    matrix[0] = new int[nr * numNucleotideSites];
+    matrix[0] = new int[nr * numSites];
     for (size_t i=1; i<nr; i++)
-        matrix[i] = matrix[i-1] + numNucleotideSites;
+        matrix[i] = matrix[i-1] + numSites;
     for (size_t i=0; i<nr; i++)
-        for (size_t j=0; j<numNucleotideSites; j++)
+        for (size_t j=0; j<numSites; j++)
             matrix[i][j] = 0;
 }
 
 Alignment::~Alignment(void) {
 
+    if (matrix != nullptr) {
+        delete [] matrix[0];
+        delete [] matrix;
+    }
+    if (patternCount != nullptr) {
+        delete [] patternCount;
+    }
+}
+
+void Alignment::compress(void) {
+
+    if (matrix == nullptr || numTaxa == 0 || numSites == 0)
+        return;
+    
+    if (isCompressed == true)
+        return;
+
+    // vector to store unique patterns and their counts
+    std::vector<std::vector<int>> uniquePatterns;
+    std::vector<int> patternCounts;
+    int removedSites = 0;
+    
+    // process each site (column) in the original matrix
+    for (int site = 0; site < numSites; site++) 
+        {
+        // extract the current site pattern
+        std::vector<int> currentPattern(numTaxa);
+        for (int taxon = 0; taxon < numTaxa; taxon++) 
+            currentPattern[taxon] = matrix[taxon][site];
+        
+        // check if all taxa have code 15 (complete missing data)
+        bool allMissing = true;
+        for (int taxon = 0; taxon < numTaxa; taxon++) {
+            if (currentPattern[taxon] != 15) {
+                allMissing = false;
+                break;
+            }
+        }
+        
+        if (allMissing) {
+            removedSites++;
+            continue; // Skip this site
+        }
+        
+        // check if this pattern already exists
+        bool patternFound = false;
+        for (size_t i = 0; i < uniquePatterns.size(); i++) 
+            {
+            bool isIdentical = true;
+            for (int taxon = 0; taxon < numTaxa; taxon++) 
+                {
+                if (uniquePatterns[i][taxon] != currentPattern[taxon]) 
+                    {
+                    isIdentical = false;
+                    break;
+                    }
+                }
+            if (isIdentical) 
+                {
+                patternCounts[i]++;
+                patternFound = true;
+                break;
+                }
+            }
+        
+        // if pattern is unique, add it
+        if (!patternFound) 
+            {
+            uniquePatterns.push_back(currentPattern);
+            patternCounts.push_back(1);
+            }
+        }
+    
+    // Report removed sites
+    if (removedSites > 0) {
+        std::cout << "   * Warning: Removed " << removedSites 
+                  << " sites with all missing data (code 15)" << std::endl;
+    }
+    
+    // create the compressed matrix
+    int newNumSites = (int)uniquePatterns.size();
+    
+    // deallocate old matrix
     delete [] matrix[0];
     delete [] matrix;
+    
+    // deallocate old patternCount if it exists
+    if (patternCount != nullptr) 
+        delete [] patternCount;
+    
+    // allocate new compressed matrix
+    matrix = new int*[numTaxa];
+    matrix[0] = new int[numTaxa * newNumSites];
+    for (int i = 1; i < numTaxa; i++)
+        matrix[i] = matrix[i-1] + newNumSites;
+    
+    // allocate pattern count array
+    patternCount = new int[newNumSites];
+    
+    // copy unique patterns to the new matrix and set pattern counts
+    for (int pattern = 0; pattern < newNumSites; pattern++) 
+        {
+        patternCount[pattern] = patternCounts[pattern];
+        for (int taxon = 0; taxon < numTaxa; taxon++) 
+            matrix[taxon][pattern] = uniquePatterns[pattern][taxon];
+        }
+    
+    // update number of sites
+    int originalNumSites = numSites;
+    numSites = newNumSites;
+    
+    std::cout << "   * Alignment compressed from " << originalNumSites 
+              << " sites to " << numSites << " unique patterns";
+    if (removedSites > 0) {
+        std::cout << " (" << removedSites << " all-missing sites removed)";
+    }
+    std::cout << std::endl;
+    
+    isCompressed = true;
 }
 
 void Alignment::createDnaMatrix(NxsCharactersBlock* charblock) {
@@ -147,20 +267,20 @@ void Alignment::createDnaMatrix(NxsCharactersBlock* charblock) {
     
     unsigned numOrigTaxa = charblock->GetNTax();
     numTaxa = charblock->GetNTax();
-    numNucleotideSites = charblock->GetNumChar();
+    numSites = charblock->GetNumChar();
     
     // get the set of excluded characters
     NxsUnsignedSet excluded = charblock->GetExcludedIndexSet();
     
     // instantiate the character matrix
     matrix = new int*[numTaxa];
-    matrix[0] = new int[numTaxa * numNucleotideSites];
+    matrix[0] = new int[numTaxa * numSites];
     for (size_t i=1; i<numTaxa; i++)
-        matrix[i] = matrix[i-1] + numNucleotideSites;
+        matrix[i] = matrix[i-1] + numSites;
     for (size_t i=0; i<numTaxa; i++)
-        for (size_t j=0; j<numNucleotideSites; j++)
+        for (size_t j=0; j<numSites; j++)
             matrix[i][j] = 0;
-    std::cout << "   * Alignment has " << numTaxa << " taxa and " << numNucleotideSites << " nucleotide sites" << std::endl;
+    std::cout << "   * Alignment has " << numTaxa << " taxa and " << numSites << " sites" << std::endl;
 
     // read in the data, including taxon names
     for (unsigned origTaxIndex=0; origTaxIndex<numOrigTaxa; origTaxIndex++)
@@ -182,28 +302,6 @@ void Alignment::createDnaMatrix(NxsCharactersBlock* charblock) {
             }
         
         }
-    
-    //setExcluded( charblock, cMat );
-}
-
-int Alignment::getNucleotide(size_t i, size_t j) {
-
-    return matrix[i][j];
-}
-
-int Alignment::getNumSites(void) {
-
-    return numNucleotideSites;
-}
-
-int Alignment::getNumStates(void) {
-
-    return 4;
-}
-
-std::vector<std::string> Alignment::getTaxonNames(void) {
-
-    return taxonNames;
 }
 
 /*-------------------------------------------------------------------
@@ -352,11 +450,6 @@ void Alignment::getPossibleNucs (int nucCode, int* nuc) {
 		}
 }
 
-std::string Alignment::getTaxonName(int i) {
-
-	return taxonNames[i];
-}
-
 int Alignment::getTaxonIndex(std::string ns) {
 
 	int taxonIndex = -1;
@@ -499,7 +592,7 @@ int Alignment::nucID(char nuc) {
 void Alignment::print(void) {
 
     int** x = matrix;
-    int matrixSize = numNucleotideSites;
+    int matrixSize = numSites;
         
     std::cout << "        ";
     for (size_t i=0; i<numTaxa; i++)
@@ -513,9 +606,9 @@ void Alignment::print(void) {
         {
         std::cout << std::setw(4) << j+1 << " -- ";
         for (size_t i=0; i<numTaxa; i++)
-            {
             std::cout << std::setw(3) << x[i][j];
-            }
+        if (patternCount != nullptr)
+            std::cout << " -- " << patternCount[j];
         std::cout << '\n';
         }
 }
@@ -527,7 +620,7 @@ void Alignment::summarize(void) {
         nucTypes[i] = 0;
         
     for (int i=0; i<numTaxa; i++)
-        for (int j=0; j<numNucleotideSites; j++)
+        for (int j=0; j<numSites; j++)
             nucTypes[ matrix[i][j] ]++;
             
     int sum = 0, maxNumDigits = 0;
@@ -559,7 +652,7 @@ void Alignment::summarize(void) {
 
     std::cout << "   * Data summary" << std::endl;
     std::cout << "   * Number of taxa    = " << std::setw(maxNumDigits) << numTaxa << std::endl;
-    std::cout << "   * Number of sites   = " << std::setw(maxNumDigits) << numNucleotideSites << std::endl;
+    std::cout << "   * Number of sites   = " << std::setw(maxNumDigits) << numSites << std::endl;
 
     for (int i=1; i<16; i++)
         std::cout << "   * Number of " << ids[i] << " = " << std::setw(maxNumDigits) << nucTypes[i] << " " << std::setw(7) << std::fixed << std::setprecision(4) << ((double)nucTypes[i]/sum) * 100.0 << "\%" << std::endl;

@@ -4,6 +4,7 @@
 #include <bitset>
 #include <string>
 #include <vector>
+#include <map>
 #include "ncl.h"
 
 
@@ -18,14 +19,16 @@ class Alignment {
                                                    ~Alignment(void);
         int&                                        operator()(size_t r, size_t c) { return this->matrix[r][c]; }
         const int&                                  operator()(size_t r, size_t c) const { return this->matrix[r][c]; }
+        void                                        compress(void);
         int                                         getNumTaxa(void) { return numTaxa; }
-        int                                         getNumSites(void);
-        int                                         getNumStates(void);
+        int                                         getNumSites(void) { return numSites; }
+        int                                         getNumStates(void) { return 4; }
+        int                                         getPatternCount(int i) { return (patternCount != nullptr && i >= 0 && i < numSites) ? patternCount[i] : 1; }
         void                                        getPossibleNucs (int nucCode, int* nuc);
-        int                                         getNucleotide(size_t i, size_t j);
+        int                                         getNucleotide(size_t i, size_t j) { return matrix[i][j]; }
         int                                         getTaxonIndex(std::string ns);
-        std::vector<std::string>                    getTaxonNames(void);
-        std::string                                 getTaxonName(int i);
+        std::vector<std::string>&                   getTaxonNames(void) { return taxonNames; }
+        std::string&                                getTaxonName(int i) { return taxonNames[i]; }
         int                                         lengthOfLongestTaxonName(void);
         void                                        listTaxa(void);
         void                                        print(void);
@@ -35,8 +38,10 @@ class Alignment {
         void                                        createDnaMatrix(NxsCharactersBlock* charblock);
         int                                         nucID(char nuc);
         int**                                       matrix;
+        int*                                        patternCount;
         int                                         numTaxa;
-        int                                         numNucleotideSites;
+        int                                         numSites;
+        bool                                        isCompressed;
         std::vector<std::string>                    taxonNames;
 };
 
