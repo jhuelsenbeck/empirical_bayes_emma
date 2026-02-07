@@ -13,7 +13,7 @@ UserSettings::UserSettings(void) {
     executableName = "";
     settingsInitialized = false;
     chainLength = 1000000;
-    printFrequency = 1;
+    printFrequency = 100;
     sampleFrequency = 100;
     inputFileName = "";
     inputTreeFileName = "";
@@ -21,7 +21,7 @@ UserSettings::UserSettings(void) {
     calculateMarginalLikelihood = false;
     brlenLambda = 10.0;
     shapeLambda = 2.0;
-    burnin = 0;
+    burnin = 0.0;
 }
 
 void UserSettings::readSettings(int argc, char* argv[]) {
@@ -70,7 +70,7 @@ void UserSettings::readSettings(int argc, char* argv[]) {
             else if (key == "-n")
                 chainLength = stod(cmd);
             else if (key == "-d")
-                burnin = stod(cmd);
+                burnin = stof(cmd);
             else if (key == "-p")
                 printFrequency = stod(cmd);
             else if (key == "-s")
@@ -106,7 +106,7 @@ void UserSettings::print(void) {
     std::cout << "   * Input tree file name (-t)       = " << inputTreeFileName << std::endl;
     std::cout << "   * Output file name (-o)           = " << outputFileName << std::endl;
     std::cout << "   * Chain length (-n)               = " << chainLength << std::endl;
-    std::cout << "   * Burn in (-d)                    = " << burnin << std::endl;
+    std::cout << "   * Burn in fraction (-d)           = " << burnin << std::endl;
     std::cout << "   * Print frequency (-p)            = " << printFrequency << std::endl;
     std::cout << "   * Sample frequency (-s)           = " << sampleFrequency << std::endl;
     std::cout << "   * Branch length lambda (-b)       = " << brlenLambda << std::endl;
@@ -119,7 +119,7 @@ void UserSettings::usage(void) {
     std::cout << "-t        Input tree file name" << std::endl;
     std::cout << "-o        Output file name" << std::endl;
     std::cout << "-n        MCMC chain length" << std::endl;
-    std::cout << "-d        MCMC burn-in length" << std::endl;
+    std::cout << "-d        MCMC burn-in fraction" << std::endl;
     std::cout << "-p        Print to screen frequency" << std::endl;
     std::cout << "-s        Chain sample frequency" << std::endl;
     std::cout << "-g        Number of gamma rate categories" << std::endl;

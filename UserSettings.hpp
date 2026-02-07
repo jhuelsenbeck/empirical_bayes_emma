@@ -14,7 +14,7 @@ class UserSettings {
                                     return userSettings;
                                     }
         double                  getBrlenLambda(void) { return brlenLambda; }
-        int                     getBurnin(void) { return burnin; }
+        double                  getBurnin(void) { return burnin; }
         bool                    getCalculateMarginalLikelihood(void) { return calculateMarginalLikelihood; }
         int                     getChainLength(void) { return chainLength; }
         std::string             getInputFileName(void) { return inputFileName; }
@@ -30,7 +30,7 @@ class UserSettings {
                                 UserSettings(void);
                                 UserSettings(UserSettings& u) { }
         void                    usage(void);
-        int                     burnin;
+        double                  burnin;
         int                     chainLength;
         int                     printFrequency;
         int                     sampleFrequency;

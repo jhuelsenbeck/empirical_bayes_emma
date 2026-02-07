@@ -31,6 +31,7 @@ class Mcmc {
         int                                 chainLength;
         int                                 printFrequency;
         int                                 sampleFrequency;
+        int                                 burn;
         std::vector<LikelihoodCalculator*>  activeCalculators;
         std::vector<LikelihoodCalculator*>  calculatorPool;
         std::vector<LikelihoodCalculator*>  allocatedCalculators;
