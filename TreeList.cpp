@@ -30,6 +30,12 @@ void TreeList::addTree(Tree* t) {
     map.insert(std::make_pair(t->getHash(),info));
 }
 
+void TreeList::addTree(Tree* t, double x) {
+
+    TreeInfo info(t,x,true);
+    map.insert(std::make_pair(t->getHash(),info));
+}
+
 Tree* TreeList::getTree(uint64_t treeHash) {
 
     TreeMapIter it = map.find(treeHash);

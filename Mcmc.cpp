@@ -53,35 +53,57 @@ double Mcmc::findTreeProbability(std::vector<std::pair<uint64_t, double>>& neigh
 
 void Mcmc::run(void) {
 
-    Tree* initialTree = new Tree(rng, alignment->getTaxonNames());
     TreeList treeList;
-    treeList.addTree(initialTree);
+    Tree* initialTree = new Tree(rng, alignment->getTaxonNames());
     uint64_t currentTree = initialTree->getHash();
+
+    LikelihoodCalculator* calculator = getCalculator();
+    calculator->setTree(initialTree);
+    double curLnL = calculator->lnLikelihood();
+    treeList.addTree(initialTree, curLnL);
+    returnCalculator(calculator);
+    
     TreeSpace treeSpace(&treeList);
     std::vector<std::pair<uint64_t, double>> forwardNeighborhood;
     std::vector<std::pair<uint64_t, double>> reverseNeighborhood;
-    
+    double power = 0.1;
     for (int n=1; n<=chainLength; n++)
         {
         std::vector<uint64_t>& forwardNeighbors = treeSpace.getNeighbors(currentTree);
         forwardNeighborhood.clear();
         calculateMaximumLikelihoods(treeList, currentTree, forwardNeighbors, forwardNeighborhood);
-        normalize(forwardNeighborhood);
+        normalize(power, forwardNeighborhood);
         uint64_t newTree;
         double forwardProbability = chooseTree(forwardNeighborhood, newTree);
+        double newLnL = treeList.getTreeInfo(newTree).lnL;
         
         std::vector<uint64_t>& reverseNeighbors = treeSpace.getNeighbors(newTree);
         reverseNeighborhood.clear();
         calculateMaximumLikelihoods(treeList, newTree, reverseNeighbors, reverseNeighborhood);
-        normalize(reverseNeighborhood);
+        normalize(power, reverseNeighborhood);
         double reverseProbability = findTreeProbability(reverseNeighborhood, currentTree);
         
-        std::cout << std::fixed << std::setprecision(50);
-        std::cout << currentTree << " -> " << newTree << " " << reverseProbability << "/" << forwardProbability << std::endl;
+        double lnLikelihoodRatio = newLnL - curLnL;
+        double lnPriorRatio = 0.0;
+        double lnProposalRatio = std::log(reverseProbability) - std::log(forwardProbability);
+        lnProposalRatio *= power;
+        double lnR = lnLikelihoodRatio + lnPriorRatio + lnProposalRatio;
+        
+        bool accept = false;
+        if (log(rng->uniformRv()) < lnR)
+            accept = true;
+            
+        if (accept == true)
+            {
+            currentTree = newTree;
+            curLnL = newLnL;
+            }
+        
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << std::setw(6) << n << " -- " << curLnL << " -> " << newLnL << " " << std::setw(8) << lnLikelihoodRatio << " " << std::setw(8) << lnProposalRatio << std::endl;
 
             
             
-        break;
         }
 }
 
@@ -121,9 +143,14 @@ void Mcmc::calculateMaximumLikelihoods(TreeList& treeList, uint64_t currentTree,
         threadPool->pushTask(calculator);
     threadPool->wait();
     
+    // fill out the information for this neighborhood
     for (LikelihoodCalculator* calculator : activeCalculators)
         neighborhoodInfo[calculator->getOffset()] = std::make_pair(calculator->getTree()->getHash(), calculator->getResult());
 
+    // return all of the calculators to the pool
+    for (LikelihoodCalculator* calculator : activeCalculators)
+        returnCalculator(calculator);
+        
     // add all of the calculated likelihoods to the TreeList object
     for (size_t i=0; i<neighborhoodInfo.size(); i++)
         {
@@ -134,7 +161,7 @@ void Mcmc::calculateMaximumLikelihoods(TreeList& treeList, uint64_t currentTree,
             treeInfo.likelihoodCalculated = true;
             }
         }
-    treeList.print();
+    //treeList.print();
 }
 
 LikelihoodCalculator* Mcmc::getCalculator(void) {
@@ -153,7 +180,7 @@ LikelihoodCalculator* Mcmc::getCalculator(void) {
     return c;
 }
 
-void Mcmc::normalize(std::vector<std::pair<uint64_t, double>>& neighborhoodInfo) {
+void Mcmc::normalize(double power, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo) {
 
     double maxLnL = neighborhoodInfo[0].second;
     for (size_t i=1; i<neighborhoodInfo.size(); i++)
@@ -164,11 +191,16 @@ void Mcmc::normalize(std::vector<std::pair<uint64_t, double>>& neighborhoodInfo)
     double sum = 0.0;
     for (size_t i=0; i<neighborhoodInfo.size(); i++)
         {
-        double x = std::exp(neighborhoodInfo[i].second - maxLnL);
+        double x = std::exp((neighborhoodInfo[i].second - maxLnL) * power);
         sum += x;
         neighborhoodInfo[i].second = x;
         }
     double factor = 1.0 / sum;
     for (size_t i=0; i<neighborhoodInfo.size(); i++)
         neighborhoodInfo[i].second *= factor;
+}
+
+void Mcmc::returnCalculator(LikelihoodCalculator* calculator) {
+
+    calculatorPool.push_back(calculator);
 }

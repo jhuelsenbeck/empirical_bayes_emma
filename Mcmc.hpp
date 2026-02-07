@@ -23,7 +23,8 @@ class Mcmc {
         double                              chooseTree(std::vector<std::pair<uint64_t, double>>& neighborhoodInfo, uint64_t& tree);
         double                              findTreeProbability(std::vector<std::pair<uint64_t, double>>& neighborhoodInfo, uint64_t& tree);
         LikelihoodCalculator*               getCalculator(void);
-        void                                normalize(std::vector<std::pair<uint64_t, double>>& neighborhoodInfo);
+        void                                normalize(double power, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo);
+        void                                returnCalculator(LikelihoodCalculator* calculator);
         Alignment*                          alignment;
         RandomVariable*                     rng;
         ThreadPool*                         threadPool;

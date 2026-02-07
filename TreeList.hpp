@@ -24,6 +24,7 @@ class TreeList {
                    ~TreeList(void);
         double      lnLikelihood(Tree* t);
         void        addTree(Tree* t);
+        void        addTree(Tree* t, double x);
         Tree*       getTree(uint64_t treeHash);
         TreeInfo&   getTreeInfo(uint64_t treeHash);
         void        print(void);
