@@ -1,7 +1,8 @@
-#include "TreeSamples.hpp"
-#include <vector>
 #include <algorithm>
+#include <iomanip>
 #include <iostream>
+#include <vector>
+#include "TreeSamples.hpp"
 
 
 
@@ -23,18 +24,24 @@ void TreeSamples::print(void) {
         return a.first < b.first; // smaller hash first on ties
     });
 
-    // print sorted results: "hash count"
+    // print sorted results
     double sum = 0.0;
+    int i = 0;
     for (const auto &e : entries)
         {
         double prob = (double)e.second / numSamples;
         sum += prob;
-        std::cout << e.first << " " << prob << " " << sum << '\n';
+        std::cout << std::setw(5) << ++i << " -- ";
+        std::cout << std::fixed << std::setprecision(4);
+        std::cout << std::setw(21) << e.first << " " << prob << " " << sum << '\n';
+        if (sum > 0.95)
+            break;
         }
 }
 
 void TreeSamples::sampleTree(uint64_t treeHash) {
 
+    numSamples++;
     TreeCountMap::iterator it = treeCounts.find(treeHash);
     if (it == treeCounts.end())
         {

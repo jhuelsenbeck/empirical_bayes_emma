@@ -101,7 +101,7 @@ void Mcmc::run(void) {
             accept = true;
 
         if (n % printFrequency == 0)
-            std::cout << std::fixed << std::setprecision(2) << std::setw(6) << n << " -- " << curLnL << " -> " << newLnL << " " << std::setw(8) << lnLikelihoodRatio << " " << std::setw(8) << lnProposalRatio << std::endl;
+            printToScreen(n, curLnL, newLnL, treeList.size());
             
         if (accept == true)
             {
@@ -207,6 +207,15 @@ void Mcmc::normalize(double power, std::vector<std::pair<uint64_t, double>>& nei
     double factor = 1.0 / sum;
     for (size_t i=0; i<neighborhoodInfo.size(); i++)
         neighborhoodInfo[i].second *= factor;
+}
+
+void Mcmc::printToScreen(int n, double curLnL, double newLnL, size_t treeListSize) {
+
+    std::cout << std::setw(6) << n << " -- ";
+    std::cout << std::fixed << std::setprecision(2); 
+    std::cout << curLnL << " -> " << newLnL << " " << std::setw(8) << newLnL-curLnL << " ";
+    std::cout << "(" << treeListSize << ") ";
+    std::cout << std::endl;
 }
 
 void Mcmc::returnCalculator(LikelihoodCalculator* calculator) {

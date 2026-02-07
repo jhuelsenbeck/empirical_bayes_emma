@@ -24,6 +24,7 @@ class Mcmc {
         double                              findTreeProbability(std::vector<std::pair<uint64_t, double>>& neighborhoodInfo, uint64_t& tree);
         LikelihoodCalculator*               getCalculator(void);
         void                                normalize(double power, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo);
+        void                                printToScreen(int n, double curLnL, double newLnL, size_t treeListSize);
         void                                returnCalculator(LikelihoodCalculator* calculator);
         Alignment*                          alignment;
         RandomVariable*                     rng;

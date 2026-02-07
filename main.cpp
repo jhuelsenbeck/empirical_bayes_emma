@@ -15,6 +15,7 @@ int main(int argc, char* argv[]) {
     
     // read the user settings
     UserSettings::userSettings().readSettings(argc, argv);
+    UserSettings::userSettings().print();
     
     // read the alignment file
     Alignment alignment(UserSettings::userSettings().getInputFileName());

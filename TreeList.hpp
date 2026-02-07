@@ -28,6 +28,7 @@ class TreeList {
         Tree*       getTree(uint64_t treeHash);
         TreeInfo&   getTreeInfo(uint64_t treeHash);
         void        print(void);
+        size_t      size(void) { return map.size(); }
     
     private:
         TreeMap     map;
