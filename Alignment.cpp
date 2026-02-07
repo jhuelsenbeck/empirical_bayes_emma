@@ -160,13 +160,7 @@ void Alignment::compress(void) {
             patternCounts.push_back(1);
             }
         }
-    
-    // Report removed sites
-    if (removedSites > 0) {
-        std::cout << "   * Warning: Removed " << removedSites 
-                  << " sites with all missing data (code 15)" << std::endl;
-    }
-    
+        
     // create the compressed matrix
     int newNumSites = (int)uniquePatterns.size();
     
@@ -199,12 +193,11 @@ void Alignment::compress(void) {
     int originalNumSites = numSites;
     numSites = newNumSites;
     
-    std::cout << "   * Alignment compressed from " << originalNumSites 
-              << " sites to " << numSites << " unique patterns";
-    if (removedSites > 0) {
+    std::cout << "   Data compression:" << std::endl;
+    std::cout << "   * Alignment compressed from " << originalNumSites << " sites to " << numSites << " unique patterns";
+    if (removedSites > 0)
         std::cout << " (" << removedSites << " all-missing sites removed)";
-    }
-    std::cout << std::endl;
+    std::cout << std::endl << std::endl;
     
     isCompressed = true;
 }
@@ -280,7 +273,10 @@ void Alignment::createDnaMatrix(NxsCharactersBlock* charblock) {
     for (size_t i=0; i<numTaxa; i++)
         for (size_t j=0; j<numSites; j++)
             matrix[i][j] = 0;
+            
+    std::cout << "   Reading DNA alignment:" << std::endl;
     std::cout << "   * Alignment has " << numTaxa << " taxa and " << numSites << " sites" << std::endl;
+    std::cout << std::endl;
 
     // read in the data, including taxon names
     for (unsigned origTaxIndex=0; origTaxIndex<numOrigTaxa; origTaxIndex++)
@@ -650,10 +646,11 @@ void Alignment::summarize(void) {
     ids.push_back("C/G/T  ");  // 14
     ids.push_back("A/C/G/T");  // 15
 
-    std::cout << "   * Data summary" << std::endl;
+    std::cout << "   Data summary:" << std::endl;
     std::cout << "   * Number of taxa    = " << std::setw(maxNumDigits) << numTaxa << std::endl;
     std::cout << "   * Number of sites   = " << std::setw(maxNumDigits) << numSites << std::endl;
 
     for (int i=1; i<16; i++)
         std::cout << "   * Number of " << ids[i] << " = " << std::setw(maxNumDigits) << nucTypes[i] << " " << std::setw(7) << std::fixed << std::setprecision(4) << ((double)nucTypes[i]/sum) * 100.0 << "\%" << std::endl;
+    std::cout << std::endl;
 }

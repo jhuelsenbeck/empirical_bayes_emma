@@ -16,7 +16,6 @@ UserSettings::UserSettings(void) {
     printFrequency = 100;
     sampleFrequency = 100;
     inputFileName = "";
-    inputTreeFileName = "";
     outputFileName = "";
     burnin = 0.0;
 }
@@ -60,8 +59,6 @@ void UserSettings::readSettings(int argc, char* argv[]) {
             {
             if (key == "-i")
                 inputFileName = cmd;
-            else if (key == "-t")
-                inputTreeFileName = cmd;
             else if (key == "-o")
                 outputFileName = cmd;
             else if (key == "-n")
@@ -83,19 +80,19 @@ void UserSettings::readSettings(int argc, char* argv[]) {
 
 void UserSettings::print(void) {
 
+    std::cout << "   User settings:" << std::endl;
     std::cout << "   * Input file name (-i)            = " << inputFileName << std::endl;
-    std::cout << "   * Input tree file name (-t)       = " << inputTreeFileName << std::endl;
     std::cout << "   * Output file name (-o)           = " << outputFileName << std::endl;
     std::cout << "   * Chain length (-n)               = " << chainLength << std::endl;
     std::cout << "   * Burn in fraction (-d)           = " << burnin << std::endl;
     std::cout << "   * Print frequency (-p)            = " << printFrequency << std::endl;
     std::cout << "   * Sample frequency (-s)           = " << sampleFrequency << std::endl;
+    std::cout << std::endl;
 }
 
 void UserSettings::usage(void) {
 
     std::cout << "-i        Input sequence file name" << std::endl;
-    std::cout << "-t        Input tree file name" << std::endl;
     std::cout << "-o        Output file name" << std::endl;
     std::cout << "-n        MCMC chain length" << std::endl;
     std::cout << "-d        MCMC burn-in fraction" << std::endl;

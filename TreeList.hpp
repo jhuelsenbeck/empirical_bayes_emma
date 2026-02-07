@@ -50,7 +50,7 @@ typedef TreeMap::iterator TreeMapIter;
 class TreeList {
 
     public:
-                   TreeList(size_t expectedSize = 1000000);  // Constructor with capacity reservation
+                    TreeList(size_t expectedSize = 1000000);
                    ~TreeList(void);
         double      lnLikelihood(Tree* t);
         void        addTree(Tree* t);

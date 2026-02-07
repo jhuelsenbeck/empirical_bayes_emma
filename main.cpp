@@ -9,9 +9,13 @@
 #include "Tree.hpp"
 #include "UserSettings.hpp"
 
+void printHeader(void);
+
 
 
 int main(int argc, char* argv[]) {
+
+    printHeader();
     
     // read the user settings
     UserSettings::userSettings().readSettings(argc, argv);
@@ -32,4 +36,16 @@ int main(int argc, char* argv[]) {
     mcmc.run();
     
     return EXIT_SUCCESS;
+}
+
+void printHeader(void) {
+
+    std::cout << std::endl;
+    std::cout << "   EPIC — Empirical Phylogenetic Inference of Clades" << std::endl;
+    std::cout << "   * Running on " << std::thread::hardware_concurrency() << " threads" << std::endl;
+    std::cout << "   * John P. Huelsenbeck (University of California, Berkeley)" << std::endl;
+    std::cout << "   * Emma Gomez (California State University, Fullerton)" << std::endl;
+    std::cout << "   * Levi Raskin (University of California, Berkeley)" << std::endl;
+    std::cout << std::endl;
+
 }

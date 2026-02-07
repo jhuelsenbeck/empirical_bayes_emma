@@ -16,7 +16,6 @@ class UserSettings {
         double                  getBurnin(void) { return burnin; }
         int                     getChainLength(void) { return chainLength; }
         std::string             getInputFileName(void) { return inputFileName; }
-        std::string             getInputTreeFileName(void) { return inputTreeFileName; }
         std::string             getOutputFileName(void) { return outputFileName; }
         int                     getPrintFrequency(void) { return printFrequency; }
         int                     getSampleFrequency(void) { return sampleFrequency; }
@@ -32,7 +31,6 @@ class UserSettings {
         int                     printFrequency;
         int                     sampleFrequency;
         std::string             inputFileName;
-        std::string             inputTreeFileName;
         std::string             outputFileName;
         bool                    settingsInitialized;
         std::string             executableName;
