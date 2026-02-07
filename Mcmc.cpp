@@ -69,7 +69,8 @@ void Mcmc::run(void) {
     TreeSamples samples(&treeList);
     std::vector<std::pair<uint64_t, double>> forwardNeighborhood;
     std::vector<std::pair<uint64_t, double>> reverseNeighborhood;
-    double power = 0.3;
+    double power = 0.4;
+    int numAccepted = 0;
     for (int n=1; n<=chainLength; n++)
         {
         std::vector<uint64_t>& forwardNeighbors = treeSpace.getNeighbors(currentTree);
@@ -107,6 +108,7 @@ void Mcmc::run(void) {
             {
             currentTree = newTree;
             curLnL = newLnL;
+            numAccepted++;
             }
 
         if (n % sampleFrequency == 0 && n >= burn)
@@ -114,6 +116,7 @@ void Mcmc::run(void) {
         }
         
     samples.print();
+    std::cout << "   Acceptance rate: " << ((double)numAccepted / chainLength) * 100.0 << "%" << std::endl;
 }
 
 void Mcmc::calculateMaximumLikelihoods(TreeList& treeList, uint64_t currentTree, std::vector<uint64_t>& neighbors, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo) {

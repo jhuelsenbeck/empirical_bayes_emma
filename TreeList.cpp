@@ -7,6 +7,7 @@
 
 
 TreeList::TreeList(size_t expectedSize) {
+
     map.reserve(expectedSize);
 }
 
