@@ -23,7 +23,7 @@ int main(int argc, char* argv[]) {
     alignment.compress();
     
     // instantiate and initialize some important objects
-    RandomVariable rng(1); 
+    RandomVariable rng; 
     BitSetFactory::getFactory().initialize(alignment.getNumTaxa());
     ThreadPool pool;
     

@@ -66,7 +66,7 @@ void Mcmc::run(void) {
     returnCalculator(calculator);
     
     TreeSpace treeSpace(&treeList);
-    TreeSamples samples;
+    TreeSamples samples(&treeList);
     std::vector<std::pair<uint64_t, double>> forwardNeighborhood;
     std::vector<std::pair<uint64_t, double>> reverseNeighborhood;
     double power = 0.1;
@@ -124,25 +124,25 @@ void Mcmc::calculateMaximumLikelihoods(TreeList& treeList, uint64_t currentTree,
     for (size_t i=0; i<neighbors.size(); i++)
         {
         TreeInfo& treeInfo = treeList.getTreeInfo(neighbors[i]);
-        if (treeInfo.likelihoodCalculated == true)
+        if (treeInfo.isLikelihoodCalculated() == true)
             {
             neighborhoodInfo[i] = std::make_pair(neighbors[i], treeInfo.lnL);
             }
         else    
             {
             LikelihoodCalculator* calculator = getCalculator();
-            calculator->setTree(treeInfo.tree);
+            calculator->setTree(treeInfo.getTree());
             calculator->setOffset(i);
             activeCalculators.push_back(calculator);
             }
         }
     TreeInfo& curTreeInfo = treeList.getTreeInfo(currentTree);
-    if (curTreeInfo.likelihoodCalculated == true)
+    if (curTreeInfo.isLikelihoodCalculated() == true)
         neighborhoodInfo[neighbors.size()] = std::make_pair(currentTree, curTreeInfo.lnL);
     else 
         {
         LikelihoodCalculator* calculator = getCalculator();
-        calculator->setTree(curTreeInfo.tree);
+        calculator->setTree(curTreeInfo.getTree());
         calculator->setOffset(neighbors.size());
         activeCalculators.push_back(calculator);
         }
@@ -164,10 +164,10 @@ void Mcmc::calculateMaximumLikelihoods(TreeList& treeList, uint64_t currentTree,
     for (size_t i=0; i<neighborhoodInfo.size(); i++)
         {
         TreeInfo& treeInfo = treeList.getTreeInfo(neighborhoodInfo[i].first);
-        if (treeInfo.likelihoodCalculated == false)
+        if (treeInfo.isLikelihoodCalculated() == false)
             {
             treeInfo.lnL = neighborhoodInfo[i].second;
-            treeInfo.likelihoodCalculated = true;
+            treeInfo.setLikelihoodCalculated(true);
             }
         }
     //treeList.print();

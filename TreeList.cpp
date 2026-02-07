@@ -6,10 +6,14 @@
 
 
 
+TreeList::TreeList(size_t expectedSize) {
+    map.reserve(expectedSize);
+}
+
 TreeList::~TreeList(void) {
 
     for (TreeMapIter it=map.begin(); it != map.end(); it++)
-        delete it->second.tree;
+        delete it->second.getTree();
 }
 
 double TreeList::lnLikelihood(Tree* t) {
@@ -41,7 +45,7 @@ Tree* TreeList::getTree(uint64_t treeHash) {
     TreeMapIter it = map.find(treeHash);
     if (it == map.end())
         return nullptr;
-    return it->second.tree;
+    return it->second.getTree();
 }
 
 TreeInfo& TreeList::getTreeInfo(uint64_t treeHash) {
@@ -57,4 +61,8 @@ void TreeList::print(void) {
     int i = 1;
     for (TreeMapIter it = map.begin(); it != map.end(); it++)
         std::cout << std::setw(6) << i++ << " " << std::setw(20) << it->first << " " << it->second.lnL << std::endl;
+}
+
+void TreeList::reserve(size_t capacity) {
+    map.reserve(capacity);
 }

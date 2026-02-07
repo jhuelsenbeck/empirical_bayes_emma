@@ -2,11 +2,12 @@
 #include <iomanip>
 #include <iostream>
 #include <vector>
+#include "TreeList.hpp"
 #include "TreeSamples.hpp"
 
 
 
-TreeSamples::TreeSamples(void) : numSamples(0) {
+TreeSamples::TreeSamples(TreeList* tl) : treeList(tl), numSamples(0) {
 
 }
 
@@ -29,11 +30,12 @@ void TreeSamples::print(void) {
     int i = 0;
     for (const auto &e : entries)
         {
+        double lnL = treeList->getTreeInfo(e.first).lnL;
         double prob = (double)e.second / numSamples;
         sum += prob;
         std::cout << std::setw(5) << ++i << " -- ";
         std::cout << std::fixed << std::setprecision(4);
-        std::cout << std::setw(21) << e.first << " " << prob << " " << sum << '\n';
+        std::cout << std::setw(21) << e.first << " " << lnL << " " << prob << " " << sum << '\n';
         if (sum > 0.95)
             break;
         }

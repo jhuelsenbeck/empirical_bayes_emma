@@ -18,9 +18,6 @@ UserSettings::UserSettings(void) {
     inputFileName = "";
     inputTreeFileName = "";
     outputFileName = "";
-    calculateMarginalLikelihood = false;
-    brlenLambda = 10.0;
-    shapeLambda = 2.0;
     burnin = 0.0;
 }
 
@@ -75,19 +72,6 @@ void UserSettings::readSettings(int argc, char* argv[]) {
                 printFrequency = stod(cmd);
             else if (key == "-s")
                 sampleFrequency = stod(cmd);
-            else if (key == "-m")
-                {
-                if (cmd == "true")
-                    calculateMarginalLikelihood = true;
-                else if (cmd == "false")
-                    calculateMarginalLikelihood = false;
-                else
-                    Msg::error("Could not interpret command \"" + cmd + "\" for the marginal likelihood option");
-                }
-            else if (key == "-b")
-                brlenLambda = stof(cmd);
-            else if (key == "-a")
-                shapeLambda = stof(cmd);
             else
                 Msg::error("Improperly formatted commands");
             readingKey = true;
@@ -99,9 +83,6 @@ void UserSettings::readSettings(int argc, char* argv[]) {
 
 void UserSettings::print(void) {
 
-    std::vector<std::string> codes = { "Universal Genetic Code", "Vertebrate Mitochondrial Code", "Mycoplasma Genetic Code", "Yeast Genetic Code", "Ciliate Genetic Code", "Metazoan Mitochondrial Genetic Code" };
-
-    std::cout << "   * Executable path/name            = " << executableName << std::endl;
     std::cout << "   * Input file name (-i)            = " << inputFileName << std::endl;
     std::cout << "   * Input tree file name (-t)       = " << inputTreeFileName << std::endl;
     std::cout << "   * Output file name (-o)           = " << outputFileName << std::endl;
@@ -109,8 +90,6 @@ void UserSettings::print(void) {
     std::cout << "   * Burn in fraction (-d)           = " << burnin << std::endl;
     std::cout << "   * Print frequency (-p)            = " << printFrequency << std::endl;
     std::cout << "   * Sample frequency (-s)           = " << sampleFrequency << std::endl;
-    std::cout << "   * Branch length lambda (-b)       = " << brlenLambda << std::endl;
-    std::cout << "   * Gamma shape lambda (-a)         = " << shapeLambda << std::endl;
 }
 
 void UserSettings::usage(void) {
@@ -122,9 +101,5 @@ void UserSettings::usage(void) {
     std::cout << "-d        MCMC burn-in fraction" << std::endl;
     std::cout << "-p        Print to screen frequency" << std::endl;
     std::cout << "-s        Chain sample frequency" << std::endl;
-    std::cout << "-g        Number of gamma rate categories" << std::endl;
-    std::cout << "-b        Parameter of exponential prior for branch lengths" << std::endl;
-    std::cout << "-a        Parameter of exponential prior for gamma shape parameter for rate variation across sites" << std::endl;
-    std::cout << "Example: ./Auswahl -i ape.in -o ape.out -n 10000 -g 4" << std::endl;
     Msg::error("Incorrectly formatted command line input");
 }

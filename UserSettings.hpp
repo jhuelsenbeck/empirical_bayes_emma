@@ -13,16 +13,13 @@ class UserSettings {
                                     static UserSettings userSettings;
                                     return userSettings;
                                     }
-        double                  getBrlenLambda(void) { return brlenLambda; }
         double                  getBurnin(void) { return burnin; }
-        bool                    getCalculateMarginalLikelihood(void) { return calculateMarginalLikelihood; }
         int                     getChainLength(void) { return chainLength; }
         std::string             getInputFileName(void) { return inputFileName; }
         std::string             getInputTreeFileName(void) { return inputTreeFileName; }
         std::string             getOutputFileName(void) { return outputFileName; }
         int                     getPrintFrequency(void) { return printFrequency; }
         int                     getSampleFrequency(void) { return sampleFrequency; }
-        double                  getShapeLambda(void) { return shapeLambda; }
         void                    print(void);
         void                    readSettings(int argc, char* argv[]);
     
@@ -38,9 +35,6 @@ class UserSettings {
         std::string             inputTreeFileName;
         std::string             outputFileName;
         bool                    settingsInitialized;
-        bool                    calculateMarginalLikelihood;
-        double                  brlenLambda;
-        double                  shapeLambda;
         std::string             executableName;
 };
 
