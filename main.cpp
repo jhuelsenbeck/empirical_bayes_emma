@@ -45,7 +45,8 @@ void printHeader(void) {
     std::cout << "   * Running on " << std::thread::hardware_concurrency() << " threads" << std::endl;
     std::cout << "   * John P. Huelsenbeck (University of California, Berkeley)" << std::endl;
     std::cout << "   * Emma Gomez (California State University, Fullerton)" << std::endl;
-    std::cout << "   * Levi Raskin (University of California, Berkeley)" << std::endl;
+    std::cout << "   * Bruce Rannala (University of California, Davis)" << std::endl;
+    std::cout << "   * Levi Yoder Raskin (University of California, Berkeley)" << std::endl;
     std::cout << std::endl;
 
 }
