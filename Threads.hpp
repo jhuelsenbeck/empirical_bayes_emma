@@ -44,7 +44,7 @@ class ThreadPool {
     private:
         void                    worker(void);
         ThreadTask*             popTask(void);
-        static constexpr size_t queueCapacity = 1024;           // cache-friendly circular buffer for tasks
+        static constexpr size_t queueCapacity = 4096;           // cache-friendly circular buffer for tasks
         static constexpr size_t queueMask = queueCapacity - 1;  // note the queueCapacity size must be power of 2 for fast modulo via bitwise AND
         std::atomic<size_t>     tasksInFlight;                  // tasks queued + tasks being executed
         size_t                  queueHead;                      // next slot to read from

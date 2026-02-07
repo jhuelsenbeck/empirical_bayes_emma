@@ -65,11 +65,11 @@ void Mcmc::run(void) {
     treeList.addTree(initialTree, curLnL);
     returnCalculator(calculator);
     
-    TreeSpace treeSpace(&treeList);
+    TreeSpaceNni2 treeSpace(&treeList);
     TreeSamples samples(&treeList);
     std::vector<std::pair<uint64_t, double>> forwardNeighborhood;
     std::vector<std::pair<uint64_t, double>> reverseNeighborhood;
-    double power = 0.1;
+    double power = 0.3;
     for (int n=1; n<=chainLength; n++)
         {
         std::vector<uint64_t>& forwardNeighbors = treeSpace.getNeighbors(currentTree);

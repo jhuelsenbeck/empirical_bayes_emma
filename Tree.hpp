@@ -29,23 +29,24 @@ class Tree {
         int                         getNumTips(void) { return numTips; }
         Node*                       getRoot(void) { return root; }
         Node*                       findTaxonNamed(std::string tName);
+        void                        initializeDownPassSequence(void);
         void                        markNodesDownFromNode(Node* p);
+        void                        markUpClsAsDirtyFromNode(Node* p);
+        void                        markDnClsAsDirty(void);
+        void                        markUpClsAsDirty(void);
+        Node*                       nodeWithOffset(size_t idx) { return nodes[idx]; }
         void                        print(void);
         void                        print(Node* subtree);
         void                        rerootOnTipZero(void);
         void                        setAllFlags(bool tf);
-        void                        markUpClsAsDirtyFromNode(Node* p);
-        void                        markDnClsAsDirty(void);
-        void                        markUpClsAsDirty(void);
+        void                        setDescriptor(void);
     
     private:
         Node*                       addNode(void);
         void                        clone(const Tree& t);
         void                        deleteNodes(void);
         int                         indexForTaxonName(std::string& name, std::vector<std::string>& taxonNames);
-        void                        initializeDownPassSequence(void);
         void                        passDown(Node* p);
-        void                        setDescriptor(void);
         void                        showNode(Node* p, int indent);
         std::vector<std::string>    tokenizeNewickString(std::string newickStr);
         void                        writeTree(Node* p, std::stringstream& strm);
