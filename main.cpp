@@ -2,11 +2,12 @@
 #include <cstdlib>
 #include "Alignment.hpp"
 #include "BitSetFactory.hpp"
-#include "LikelihoodCalculator.hpp"
+#include "ExhaustiveSearch.hpp"
 #include "Mcmc.hpp"
 #include "RandomVariable.hpp"
 #include "Threads.hpp"
 #include "Tree.hpp"
+#include "TreeList.hpp"
 #include "UserSettings.hpp"
 
 void printHeader(void);
@@ -17,23 +18,30 @@ int main(int argc, char* argv[]) {
 
     printHeader();
     
+    RandomVariable rng; 
+    ThreadPool pool;
+
     // read the user settings
     UserSettings::userSettings().readSettings(argc, argv);
     UserSettings::userSettings().print();
     
     // read the alignment file
     Alignment alignment(UserSettings::userSettings().getInputFileName());
+    alignment.twist(&rng, 20);
+    alignment.print(UserSettings::userSettings().getOutputFileName());
     alignment.summarize();
     alignment.compress();
     
-    // instantiate and initialize some important objects
-    RandomVariable rng; 
     BitSetFactory::getFactory().initialize(alignment.getNumTaxa());
-    ThreadPool pool;
+    TreeList treeList(alignment.getTaxonNames());
+    std::map<uint64_t,std::pair<double,double>> treeProbabilities;
     
+    ExhaustiveSearch exhaustive(&alignment, &treeList, &pool);
+    exhaustive.enumerateAllTrees(treeProbabilities);
+        
     // Markov chain Monte Carlo exploration of tree space
-    Mcmc mcmc(&rng, &pool, &alignment);
-    mcmc.run();
+    Mcmc mcmc(&rng, &pool, &alignment, &treeList);
+    mcmc.run(treeProbabilities);
     
     return EXIT_SUCCESS;
 }

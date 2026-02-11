@@ -37,6 +37,7 @@ class ThreadPool {
     public:
         explicit                ThreadPool(void);
                                ~ThreadPool(void);
+        size_t                  getQueueCapacity(void) { return queueCapacity; }
         void                    pushTask(ThreadTask* task);
         void                    wait(void);
         int                     getThreadCount(void) const { return threadCount; }

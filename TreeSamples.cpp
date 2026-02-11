@@ -11,7 +11,7 @@ TreeSamples::TreeSamples(TreeList* tl) : treeList(tl), numSamples(0) {
 
 }
 
-void TreeSamples::print(void) {
+void TreeSamples::print(std::map<uint64_t,std::pair<double,double>>& treeProbabilities) {
 
     // collect entries from the map
     std::vector<std::pair<uint64_t, std::size_t>> entries;
@@ -36,6 +36,13 @@ void TreeSamples::print(void) {
         std::cout << std::setw(5) << ++i << " -- ";
         std::cout << std::fixed << std::setprecision(4);
         std::cout << std::setw(21) << e.first << " " << lnL << " " << prob << " " << sum << '\n';
+        
+        std::map<uint64_t,std::pair<double,double>>::iterator it = treeProbabilities.find(e.first);
+        if (it == treeProbabilities.end())
+            treeProbabilities.insert( std::make_pair(e.first,std::make_pair(0.0,prob)) );
+        else 
+            it->second.second = prob;
+            
         if (sum > 0.95)
             break;
         }

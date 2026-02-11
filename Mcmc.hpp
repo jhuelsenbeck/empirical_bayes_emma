@@ -1,6 +1,7 @@
 #ifndef Mcmc_hpp
 #define Mcmc_hpp
 
+#include <map>
 #include <vector>
 class Alignment;
 class LikelihoodCalculator;
@@ -8,15 +9,16 @@ class RandomVariable;
 class TreeList;
 class ThreadPool;
 class Tree;
+class TreeList;
 
 
 class Mcmc {
 
     public:
                                             Mcmc(void) = delete;
-                                            Mcmc(RandomVariable* r, ThreadPool* tp, Alignment* a);
+                                            Mcmc(RandomVariable* r, ThreadPool* tp, Alignment* a, TreeList* tl);
                                            ~Mcmc(void);
-        void                                run(void);
+        void                                run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities);
     
     private:
         void                                calculateMaximumLikelihoods(TreeList& treeList, uint64_t currentTree, std::vector<uint64_t>& neighbors, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo);
@@ -24,11 +26,13 @@ class Mcmc {
         double                              findTreeProbability(std::vector<std::pair<uint64_t, double>>& neighborhoodInfo, uint64_t& tree);
         LikelihoodCalculator*               getCalculator(void);
         void                                normalize(double power, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo);
+        void                                print(std::map<uint64_t,std::pair<double,double>>& treeProbabilities);
         void                                printToScreen(int n, double curLnL, double newLnL, size_t treeListSize);
         void                                returnCalculator(LikelihoodCalculator* calculator);
         Alignment*                          alignment;
         RandomVariable*                     rng;
         ThreadPool*                         threadPool;
+        TreeList*                           treeList;
         int                                 chainLength;
         int                                 printFrequency;
         int                                 sampleFrequency;

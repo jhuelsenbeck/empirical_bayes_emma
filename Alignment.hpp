@@ -6,6 +6,7 @@
 #include <vector>
 #include <map>
 #include "ncl.h"
+class RandomVariable;
 
 
 
@@ -32,11 +33,14 @@ class Alignment {
         int                                         lengthOfLongestTaxonName(void);
         void                                        listTaxa(void);
         void                                        print(void);
+        void                                        print(std::string fileName);
         void                                        summarize(void);
+        void                                        twist(RandomVariable* rng, int nTrees);
 
     private:
         void                                        createDnaMatrix(NxsCharactersBlock* charblock);
         int                                         nucID(char nuc);
+        char                                        toNuc(int charCode);
         int**                                       matrix;
         int*                                        patternCount;
         int                                         numTaxa;

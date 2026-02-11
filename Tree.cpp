@@ -29,53 +29,62 @@ Tree::Tree(RandomVariable* rng, std::vector<std::string>& taxonNames) {
     numTips = static_cast<int>(taxonNames.size());
     numNodes = 0;
 
-    // make an initial three-species tree
+    if (numTips < 3)
+        Msg::error("Must have at least three taxa");
+        
+    // build three species tree
     root = addNode();
+    root->setIsTip(true);
     root->setIndex(0);
     root->setName(taxonNames[0]);
-    root->setIsTip(true);
-    Node* rootDes = addNode();
-    root->addDescendant(rootDes);
-    rootDes->setAncestor(root);
-    for (size_t i=1; i<3; i++)
-        {
-        Node* p = addNode();
-        p->setIndex(static_cast<int>(i));
-        p->setName(taxonNames[i]);
-        p->setIsTip(true);
-        p->setAncestor(rootDes);
-        rootDes->addDescendant(p);
-        }
+    
+    Node* p = addNode();
+    p->setAncestor(root);
+    root->addDescendant(p);
+    
+    Node* q = addNode();
+    q->setIsTip(true);
+    q->setIndex(1);
+    q->setName(taxonNames[1]);
+    q->setAncestor(p);
+    p->addDescendant(q);
+    
+    q = addNode();
+    q->setIsTip(true);
+    q->setIndex(2);
+    q->setName(taxonNames[2]);
+    q->setAncestor(p);
+    p->addDescendant(q);
         
-    // randomly add the remaining taxa
-    for (size_t i=3; i<taxonNames.size(); i++)
+    for (int i=3; i<numTips; i++)
         {
-        Node* p = nullptr;
+        p = nullptr;
         do {
-            p = nodes[static_cast<size_t>(rng->uniformRv()*nodes.size())];
+            p = nodes[(int)(rng->uniformRv()*nodes.size())];
             } while (p == root);
         Node* pAnc = p->getAncestor();
         
         Node* newTip = addNode();
-        newTip->setIndex(static_cast<int>(i));
-        newTip->setName(taxonNames[i]);
         newTip->setIsTip(true);
+        newTip->setIndex(i);
+        newTip->setName(taxonNames[i]);
+        
         Node* newInt = addNode();
         
         pAnc->removeDescendant(p);
+        pAnc->addDescendant(newInt);
+        newInt->setAncestor(pAnc);
         newInt->addDescendant(p);
         newInt->addDescendant(newTip);
-        pAnc->addDescendant(newInt);
         p->setAncestor(newInt);
         newTip->setAncestor(newInt);
-        newInt->setAncestor(pAnc);
         }
-        
+
     // get postorder traversal sequence
     initializeDownPassSequence();
     
     // set the initial branch lengths
-    for (Node* p : downPassSequence)
+    for (Node* p : downPassSequence) 
         {
         if (p != root)
             p->setBrlen(0.02);
@@ -83,7 +92,7 @@ Tree::Tree(RandomVariable* rng, std::vector<std::string>& taxonNames) {
         
     // relabel interior nodes
     int intIdx = numTips;
-    for (Node* p : downPassSequence)
+    for (Node* p : downPassSequence) 
         {
         if (p->getIsTip() == false)
             p->setIndex(intIdx++);
@@ -188,6 +197,40 @@ Tree::Tree(std::string newickStr, std::vector<std::string>& taxonNames) {
     setDescriptor();
 }
 
+Tree::Tree(Node* rootNode, std::vector<std::string>& taxonNames) {
+
+    numTips = static_cast<int>(taxonNames.size());
+    numNodes = 0;
+    
+    // clone the node structure
+    root = cloneNodeStructure(rootNode);
+    
+    // get postorder traversal sequence
+    initializeDownPassSequence();
+    
+    // reroot the tree on tip zero
+    rerootOnTipZero();
+    
+    // relabel interior nodes
+    int intIdx = numTips;
+    for (Node* p : downPassSequence)
+        {
+        if (p->getIsTip() == false)
+            p->setIndex(intIdx++);
+        }
+        
+    // set branch lengths
+    for (Node* p : downPassSequence)
+        {
+        if (p == root)
+            p->setBrlen(0.0);
+        else
+            p->setBrlen(0.02);
+        }
+
+    setDescriptor();
+}
+
 Tree::~Tree(void) {
 
     // free memory here
@@ -259,6 +302,36 @@ void Tree::deleteNodes(void) {
     for (size_t i=0, n=nodes.size(); i<n; i++)
         nf.returnToPool(nodes[i]);
     nodes.clear();
+    numNodes = 0;
+}
+
+Node* Tree::cloneNodeStructure(Node* originalNode) {
+    
+    if (originalNode == nullptr)
+        return nullptr;
+    
+    // create a new node for this tree
+    Node* newNode = addNode();
+    
+    // copy the properties from the original node
+    newNode->setIndex(originalNode->getIndex());
+    newNode->setIsTip(originalNode->getIsTip());
+    newNode->setBrlen(originalNode->getBrlen());
+    newNode->setFlag(originalNode->getFlag());
+    
+    // copy the name
+    if (originalNode->getName() != nullptr)
+        newNode->setName(originalNode->getName());
+    
+    // recursively clone all descendants
+    for (Node* child = originalNode->getFirstDescendant(); child != nullptr; child = child->getNextSibling()) 
+        {
+        Node* newChild = cloneNodeStructure(child);
+        newChild->setAncestor(newNode);
+        newNode->addDescendant(newChild);
+        }   
+    
+    return newNode;
 }
 
 Node* Tree::findTaxonNamed(std::string tName) {
@@ -497,6 +570,8 @@ void Tree::showNode(Node* p, int indent) {
         std::cout << std::fixed << std::setprecision(8) << p->getBrlen() << " ";
         std::cout << p->getDirtyDnCl() << p->getDirtyUpCl() << " ";
         std::cout << p->getName() << " ";
+        if (p == root)
+            std::cout << "<- Root ";
         std::cout << std::endl;
         
         // recurse into descendants
@@ -542,22 +617,39 @@ void Tree::writeTree(Node* p, std::stringstream& strm) {
     if (p == nullptr)
         return;
     
-    if (p->getIsTip() == false)
-        strm << "(";
-    else
-        strm << p->getName() << ":" << p->getBrlen();
-    
-    // LCRS iteration over children
-    bool first = true;
-    for (Node* d = p->getFirstDescendant(); d != nullptr; d = d->getNextSibling())
+    // Special handling for root node
+    if (p == root)
         {
-        if (!first)
-            strm << ",";
-        first = false;
-        writeTree(d, strm);
+        // Root node - just process descendants
+        bool first = true;
+        for (Node* d = p->getFirstDescendant(); d != nullptr; d = d->getNextSibling())
+            {
+            if (!first)
+                strm << ",";
+            first = false;
+            writeTree(d, strm);
+            }
         }
+    else if (p->getIsTip() == false)
+        {
+        // Internal node
+        strm << "(";
         
-    if (p->getIsTip() == false)
+        bool first = true;
+        for (Node* d = p->getFirstDescendant(); d != nullptr; d = d->getNextSibling())
+            {
+            if (!first)
+                strm << ",";
+            first = false;
+            writeTree(d, strm);
+            }
+            
         strm << ")" << ":" << p->getBrlen();
+        }
+    else
+        {
+        // Tip node
+        strm << p->getName() << ":" << p->getBrlen();
+        }
 }
 

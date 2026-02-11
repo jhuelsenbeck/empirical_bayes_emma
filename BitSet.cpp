@@ -354,8 +354,10 @@ void BitSet::flip(size_t idx) {
 // flip all bits
 void BitSet::flip(void) {
 
+    if (numUints == 0)
+        return;
     for (size_t i=0; i<numUints; i++)
-        v[i] = v[i] ^ BitSet::maxUInt;
+        v[i] ^= BitSet::maxUInt;
     v[numUints-1] &= mask;
 }
 
@@ -641,3 +643,4 @@ void BitSet::test(void) {
     std::cout << x9 << std::endl;
     x9.print();
 }
+

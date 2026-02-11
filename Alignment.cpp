@@ -5,10 +5,10 @@
 #include <istream>
 #include <sstream>
 #include <map>
-
 #include "ncl.h"
 #include "Alignment.hpp"
 #include "Msg.hpp"
+#include "RandomVariable.hpp"
 #include "UserSettings.hpp"
 
 
@@ -88,13 +88,13 @@ Alignment::Alignment(std::vector<std::string> tn, int nr, int nc) :
 
 Alignment::~Alignment(void) {
 
-    if (matrix != nullptr) {
+    if (matrix != nullptr) 
+        {
         delete [] matrix[0];
         delete [] matrix;
-    }
-    if (patternCount != nullptr) {
+        }
+    if (patternCount != nullptr) 
         delete [] patternCount;
-    }
 }
 
 void Alignment::compress(void) {
@@ -120,17 +120,20 @@ void Alignment::compress(void) {
         
         // check if all taxa have code 15 (complete missing data)
         bool allMissing = true;
-        for (int taxon = 0; taxon < numTaxa; taxon++) {
-            if (currentPattern[taxon] != 15) {
+        for (int taxon = 0; taxon < numTaxa; taxon++) 
+            {
+            if (currentPattern[taxon] != 15) 
+                {
                 allMissing = false;
                 break;
+                }
             }
-        }
         
-        if (allMissing) {
+        if (allMissing) 
+            {
             removedSites++;
             continue; // Skip this site
-        }
+            }
         
         // check if this pattern already exists
         bool patternFound = false;
@@ -609,6 +612,37 @@ void Alignment::print(void) {
         }
 }
 
+void Alignment::print(std::string fileName) {
+
+    size_t longestName = 0;
+    for (size_t i=0; i<numTaxa; i++)
+        {
+        if (taxonNames[i].length() > longestName)
+            longestName = taxonNames[i].length();
+        }
+        
+    std::ofstream strm(fileName);
+    
+    strm << "#NEXUS" << std::endl << std::endl;
+    strm << "begin data;" << std::endl;
+    strm << "   dimensions ntax=" << numTaxa << " nchar=" << numSites << ";" << std::endl;
+    strm << "   format datatype=dna;" << std::endl;
+    strm << "   matrix" << std::endl;
+    for (size_t i=0; i<numTaxa; i++)
+        {
+        strm << "   " << taxonNames[i];
+        for (size_t j=0; j<longestName-taxonNames[i].length() + 1; j++)
+            strm << " ";
+        for (size_t j=0; j<numSites; j++)
+            strm << toNuc(matrix[i][j]);
+        strm << std::endl;
+        }
+    strm << "   ;" << std::endl;
+    strm << "end;" << std::endl;
+    
+    strm.close();
+}
+
 void Alignment::summarize(void) {
     
     int nucTypes[16];
@@ -653,4 +687,85 @@ void Alignment::summarize(void) {
     for (int i=1; i<16; i++)
         std::cout << "   * Number of " << ids[i] << " = " << std::setw(maxNumDigits) << nucTypes[i] << " " << std::setw(7) << std::fixed << std::setprecision(4) << ((double)nucTypes[i]/sum) * 100.0 << "\%" << std::endl;
     std::cout << std::endl;
+}
+
+char Alignment::toNuc(int charCode) {
+
+    if (charCode == 1)
+        return 'A';
+    else if (charCode == 2)
+        return 'C';
+    else if (charCode == 4)
+        return 'G';
+    else if (charCode == 8)
+        return 'T';
+    else if (charCode == 3)
+        return 'M';
+    else if (charCode == 5)
+        return 'R';
+    else if (charCode == 6)
+        return 'S';
+    else if (charCode == 7)
+        return 'V';
+    else if (charCode == 9)
+        return 'W';
+    else if (charCode == 10)
+        return 'Y';
+    else if (charCode == 11)
+        return 'H';
+    else if (charCode == 12)
+        return 'K';
+    else if (charCode == 13)
+        return 'D';
+    else if (charCode == 14)
+        return 'B';
+    return 'N';
+}
+
+void Alignment::twist(RandomVariable* rng, int nTrees) {
+
+    if (isCompressed == true)
+        Msg::error("Cannot permute a compressed alignment");
+        
+    if (nTrees < 2)
+        return;
+            
+    std::vector<std::vector<int>> twistMap(nTrees);
+    for (int n=0; n<nTrees; n++)
+        {
+        twistMap[n].resize(numTaxa);
+        
+        std::vector<int> vals;
+        vals.clear();
+        for (int i=0; i<numTaxa; i++)
+            vals.push_back(i);
+
+        for (size_t i=0; i<numTaxa; i++)
+            {
+            int whichElement = (int)(rng->uniformRv()*vals.size());
+            twistMap[n][i] = vals[whichElement];
+            vals[whichElement] = vals[vals.size()-1];
+            vals.pop_back();
+            }
+        }
+        
+    int** tempMatrix = new int*[numTaxa];
+    tempMatrix[0] = new int[numTaxa * numSites];
+    for (size_t i=1; i<numTaxa; i++)
+        tempMatrix[i] = tempMatrix[i-1] + numSites;
+    for (size_t i=0; i<numTaxa; i++)
+        for (size_t j=0; j<numSites; j++)
+            tempMatrix[i][j] = matrix[i][j];
+            
+    for (size_t j=0; j<numSites; j++)
+        {
+        int whichTree = (int)(rng->uniformRv()*nTrees);
+        for (size_t i=0; i<numTaxa; i++)
+            tempMatrix[i][j] = matrix[ twistMap[whichTree][i] ][j];
+        }
+    
+    delete [] matrix[0];
+    delete [] matrix;
+   
+    matrix = tempMatrix;
 }

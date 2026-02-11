@@ -8,6 +8,7 @@ class Alignment;
 class ConditionalLikelihoods;
 class Node;
 class Tree;
+class TreeInfo;
 
 
 
@@ -19,9 +20,11 @@ class LikelihoodCalculator : public LikelihoodTask {
                                    ~LikelihoodCalculator(void);
         size_t                      getOffset(void) { return offset; }
         Tree*                       getTree(void) { return tree; }
+        TreeInfo*                   getTreeInfo(void) { return treeInfo; }
         double                      lnLikelihood(void);
         void                        setOffset(size_t x) { offset = x; }
         void                        setTree(Tree* t);
+        void                        setTreeInfo(TreeInfo* ti) { treeInfo = ti; }
     
     private:
         double                      calculateLFS(double* clsUp, double* clsDn, TransitionMatrix& tMat, TransitionMatrix& fMat, TransitionMatrix& sMat, double& firstDerivative, double& secondDerivative);
@@ -35,7 +38,8 @@ class LikelihoodCalculator : public LikelihoodTask {
         Node*                       treeRootDescendant;
         int*                        patternCount;
         TransitionMatrix*           tiProbs;
-        ConditionalLikelihoods**    condLikes;     
+        ConditionalLikelihoods**    condLikes;   
+        TreeInfo*                   treeInfo;  
         static constexpr double     minBrlen = 1.0e-6;
         static constexpr double     maxBrlen = 2.0;
         size_t                      numSites;

@@ -20,6 +20,7 @@ class Tree {
                                     Tree(const Tree& t);
                                     Tree(RandomVariable* rng, std::vector<std::string>& taxonNames);
                                     Tree(std::string newickStr, std::vector<std::string>& taxonNames);
+                                    Tree(Node* rootNode, std::vector<std::string>& taxonNames);
                                    ~Tree(void);
         Tree&                       operator=(const Tree& rhs);
         uint64_t                    getHash(void) { return hash; }
@@ -44,6 +45,7 @@ class Tree {
     private:
         Node*                       addNode(void);
         void                        clone(const Tree& t);
+        Node*                       cloneNodeStructure(Node* originalNode);
         void                        deleteNodes(void);
         int                         indexForTaxonName(std::string& name, std::vector<std::string>& taxonNames);
         void                        passDown(Node* p);
