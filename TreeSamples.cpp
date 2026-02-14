@@ -43,7 +43,7 @@ void TreeSamples::print(std::map<uint64_t,std::pair<double,double>>& treeProbabi
         else 
             it->second.second = prob;
             
-        if (sum > 0.95)
+        if (sum > 0.99)
             break;
         }
 }

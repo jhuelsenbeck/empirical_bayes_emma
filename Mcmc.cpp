@@ -9,11 +9,12 @@
 #include "TreeList.hpp"
 #include "TreeNeighborhood.hpp"
 #include "TreeSamples.hpp"
+#include "TreeSpace.hpp"
 
 
 
-Mcmc::Mcmc(RandomVariable* r, ThreadPool* tp, Alignment* a, TreeList* tl) : 
-    rng(r), threadPool(tp), alignment(a), treeList(tl) {
+Mcmc::Mcmc(RandomVariable* r, ThreadPool* tp, Alignment* a, TreeList* tl, TreeSpace* ts) : 
+    rng(r), threadPool(tp), alignment(a), treeList(tl), treeSpace(ts) {
 
     UserSettings& settings = UserSettings::userSettings();
     chainLength = settings.getChainLength();
@@ -165,8 +166,16 @@ void Mcmc::print(std::map<uint64_t,std::pair<double,double>>& treeProbabilities)
             }
         }
         
+    int i = 0;
     for (auto& x : treeProbabilities)
-        std::cout << x.first << " " << x.second.first << " " << x.second.second << std::endl;
+        {
+        TreeSpaceNode* nde = treeSpace->getTree(x.first);
+        int basinId = nde->peakId;
+        std::cout << "   * " << ++i << " -- " << x.first << " " << x.second.first;
+        std::cout << " " << x.second.second << " ";
+        std::cout << basinId << " ";
+        std::cout << std::endl;
+        }
 
 }
 
@@ -194,7 +203,6 @@ void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities) {
     LikelihoodCalculator* calculator = getCalculator();
     calculator->setTree(initialTree);
     double curLnL = calculator->lnLikelihood();
-    std::cout << "initial tree curLnL = " << curLnL << std::endl;
     treeList->addTree(initialTree, curLnL);
     returnCalculator(calculator);
     
@@ -202,7 +210,7 @@ void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities) {
     TreeSamples samples(treeList);
     std::vector<std::pair<uint64_t, double>> forwardNeighborhood;
     std::vector<std::pair<uint64_t, double>> reverseNeighborhood;
-    double power = 0.1;
+    double power = 0.5;
     int numAccepted = 0;
     
     for (int n=1; n<=chainLength; n++)
@@ -255,3 +263,122 @@ void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities) {
     print(treeProbabilities);
 }
 
+void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, int numChains, double temperature) {
+
+    std::cout << "   Markov chain Monte Carlo:" << std::endl;
+
+    std::vector<int> chainIndex(numChains);
+    std::vector<Tree*> initialTree(numChains);
+    std::vector<uint64_t> currentTree(numChains);
+    for (size_t i=0; i<numChains; i++)
+        {
+        chainIndex[i] = (int)i;
+        initialTree[i] = new Tree(rng, alignment->getTaxonNames());
+        currentTree[i] = initialTree[i]->getHash();
+        }
+        
+    LikelihoodCalculator* calculator = getCalculator();
+    std::vector<double> curLnL(numChains);
+    for (size_t i=0; i<numChains; i++)
+        {
+        calculator->setTree(initialTree[i]);
+        curLnL[i] = calculator->lnLikelihood();
+        treeList->addTree(initialTree[i], curLnL[i]);
+        }
+    returnCalculator(calculator);
+    
+    TreeNeighborhoodNni treeSpace(treeList);
+    TreeSamples samples(treeList);
+    std::vector<std::pair<uint64_t, double>> forwardNeighborhood;
+    std::vector<std::pair<uint64_t, double>> reverseNeighborhood;
+    double power = 0.5;
+    int numAccepted = 0;
+    
+    for (int n=1; n<=chainLength; n++)
+        {
+        for (size_t chain=0; chain<numChains; chain++)
+            {
+            std::vector<uint64_t>& forwardNeighbors = treeSpace.getNeighbors(currentTree[chain]);
+            forwardNeighborhood.clear();
+            calculateMaximumLikelihoods(*treeList, currentTree[chain], forwardNeighbors, forwardNeighborhood);
+            normalize(power, forwardNeighborhood);
+            uint64_t newTree;
+            double forwardProbability = chooseTree(forwardNeighborhood, newTree);
+            double newLnL = treeList->getTreeInfo(newTree).lnL;
+            
+            double reverseProbability = forwardProbability;
+            if (newTree != currentTree[chain])
+                {
+                std::vector<uint64_t>& reverseNeighbors = treeSpace.getNeighbors(newTree);
+                reverseNeighborhood.clear();
+                calculateMaximumLikelihoods(*treeList, newTree, reverseNeighbors, reverseNeighborhood);
+                normalize(power, reverseNeighborhood);
+                reverseProbability = findTreeProbability(reverseNeighborhood, currentTree[chain]);
+                }
+            
+            double lnLikelihoodRatio = (newLnL - curLnL[chain]) * heat(chainIndex[chain], temperature);
+            double lnPriorRatio = 0.0;
+            double lnProposalRatio = std::log(reverseProbability) - std::log(forwardProbability);
+            lnProposalRatio *= power;
+            double lnR = lnLikelihoodRatio + lnPriorRatio + lnProposalRatio;
+            
+            bool accept = false;
+            if (log(rng->uniformRv()) < lnR)
+                accept = true;
+            if (chainIndex[chain] == 0 && n % printFrequency == 0)
+                printToScreen(n, curLnL[chain], newLnL, treeList->size());
+                
+            if (accept == true)
+                {
+                currentTree[chain] = newTree;
+                curLnL[chain] = newLnL;
+                numAccepted++;
+                }
+            }
+            
+        // choose two chains at random
+        std::pair<int,int> idx = chooseChains(numChains);
+        int idx0 = chainIndex[idx.first];
+        int idx1 = chainIndex[idx.second];
+        double lnR = (curLnL[idx.first] * heat(idx1, temperature) + curLnL[idx.second] * heat(idx0, temperature));
+        lnR -=  (curLnL[idx.first] * heat(idx0, temperature) + curLnL[idx.second] * heat(idx1, temperature));
+        if (log(rng->uniformRv()) < lnR)
+            {
+            chainIndex[idx.first] = idx1;
+            chainIndex[idx.second] = idx0;
+            }
+
+        if (n % sampleFrequency == 0 && n >= burn)
+            {
+            int coldChainIdx = 0;
+            for (int i=0; i<numChains; i++)
+                {
+                if (chainIndex[i] == 0)
+                    {
+                    coldChainIdx = i;
+                    break;
+                    }
+                }
+            samples.sampleTree(currentTree[coldChainIdx]);
+            }
+        }
+        
+    samples.print(treeProbabilities);
+    std::cout << "   Acceptance rate: " << ((double)numAccepted / chainLength) * 100.0 << "%" << std::endl << std::endl;
+    
+    print(treeProbabilities);
+}
+
+double Mcmc::heat(int i, double temperature) {
+
+    return 1.0 / (1.0 + i*temperature);
+}
+
+std::pair<int,int> Mcmc::chooseChains(int numChains) {
+
+    int idx1 = (int)(rng->uniformRv()*numChains);
+    int idx2 = idx1;
+    while (idx1 == idx2)
+        idx2 = (int)(rng->uniformRv()*numChains);
+    return std::make_pair(idx1,idx2);
+}

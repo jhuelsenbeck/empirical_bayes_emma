@@ -8,6 +8,7 @@
 #include "Threads.hpp"
 #include "Tree.hpp"
 #include "TreeList.hpp"
+#include "TreeSpace.hpp"
 #include "UserSettings.hpp"
 
 void printHeader(void);
@@ -27,7 +28,7 @@ int main(int argc, char* argv[]) {
     
     // read the alignment file
     Alignment alignment(UserSettings::userSettings().getInputFileName());
-    alignment.twist(&rng, 20);
+    //alignment.twist(&rng, 20);
     alignment.print(UserSettings::userSettings().getOutputFileName());
     alignment.summarize();
     alignment.compress();
@@ -38,10 +39,12 @@ int main(int argc, char* argv[]) {
     
     ExhaustiveSearch exhaustive(&alignment, &treeList, &pool);
     exhaustive.enumerateAllTrees(treeProbabilities);
+    TreeSpace treeSpace(&treeList);
+    treeSpace.characterize();
         
     // Markov chain Monte Carlo exploration of tree space
-    Mcmc mcmc(&rng, &pool, &alignment, &treeList);
-    mcmc.run(treeProbabilities);
+    Mcmc mcmc(&rng, &pool, &alignment, &treeList, &treeSpace);
+    mcmc.run(treeProbabilities, 4, 0.2);
     
     return EXIT_SUCCESS;
 }
