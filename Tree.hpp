@@ -20,9 +20,11 @@ class Tree {
                                     Tree(const Tree& t);
                                     Tree(RandomVariable* rng, std::vector<std::string>& taxonNames);
                                     Tree(std::string newickStr, std::vector<std::string>& taxonNames);
+                                    Tree(BitSet* newickBitSet, std::vector<std::string>& taxonNames);
                                     Tree(Node* rootNode, std::vector<std::string>& taxonNames);
                                    ~Tree(void);
         Tree&                       operator=(const Tree& rhs);
+        BitSet*                     getCompactRepresentation(void);
         uint64_t                    getHash(void) { return hash; }
         std::vector<Node*>&         getDownPassSequence(void) { return downPassSequence; }
         std::string                 getNewickString(void);
@@ -48,10 +50,12 @@ class Tree {
         Node*                       cloneNodeStructure(Node* originalNode);
         void                        deleteNodes(void);
         int                         indexForTaxonName(std::string& name, std::vector<std::string>& taxonNames);
+        int                         numBits(int n);
         void                        passDown(Node* p);
         void                        showNode(Node* p, int indent);
         std::vector<std::string>    tokenizeNewickString(std::string newickStr);
         void                        writeTree(Node* p, std::stringstream& strm);
+        void                        writeTreeBits(Node* p, BitSet* bitSet, size_t& pos, int numTaxonBits);
         Node*                       root;
         int                         numNodes;
         int                         numTips;

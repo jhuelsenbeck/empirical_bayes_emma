@@ -206,6 +206,13 @@ void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities) {
     treeList->addTree(initialTree, curLnL);
     returnCalculator(calculator);
     
+    initialTree->print();
+    std::cout << initialTree->getNewickString() << std::endl;
+    BitSet* bs = initialTree->getCompactRepresentation();
+    bs->print();
+    Tree tempTree(bs, alignment->getTaxonNames());
+    tempTree.print();
+    
     TreeNeighborhoodNni treeSpace(treeList);
     TreeSamples samples(treeList);
     std::vector<std::pair<uint64_t, double>> forwardNeighborhood;

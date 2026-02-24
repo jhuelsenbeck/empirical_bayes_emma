@@ -28,23 +28,24 @@ int main(int argc, char* argv[]) {
     
     // read the alignment file
     Alignment alignment(UserSettings::userSettings().getInputFileName());
-    //alignment.twist(&rng, 20);
+    alignment.twist(&rng, 20);
     alignment.print(UserSettings::userSettings().getOutputFileName());
     alignment.summarize();
     alignment.compress();
     
     BitSetFactory::getFactory().initialize(alignment.getNumTaxa());
     TreeList treeList(alignment.getTaxonNames());
-    std::map<uint64_t,std::pair<double,double>> treeProbabilities;
     
+    std::map<uint64_t,std::pair<double,double>> treeProbabilities;
     ExhaustiveSearch exhaustive(&alignment, &treeList, &pool);
     exhaustive.enumerateAllTrees(treeProbabilities);
+    
     TreeSpace treeSpace(&treeList);
     treeSpace.characterize();
         
     // Markov chain Monte Carlo exploration of tree space
     Mcmc mcmc(&rng, &pool, &alignment, &treeList, &treeSpace);
-    mcmc.run(treeProbabilities, 4, 0.2);
+    mcmc.run(treeProbabilities);
     
     return EXIT_SUCCESS;
 }

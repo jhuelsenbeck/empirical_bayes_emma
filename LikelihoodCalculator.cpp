@@ -156,7 +156,6 @@ double LikelihoodCalculator::lnLikelihood(void) {
     tree->markUpClsAsDirty();
     tree->markDnClsAsDirty();
     tree->setAllFlags(false);
-//    std::vector<double> tempLikes;
     for (size_t rep=0; rep<10; rep++)
         {
         // pass up the tree, optimizing the branch for each node
@@ -178,24 +177,14 @@ double LikelihoodCalculator::lnLikelihood(void) {
         if (rep == 0)
             {
             bestLnL = lnL;
-//            tempLikes.push_back(lnL);
             }
         else 
             {
-//            tempLikes.push_back(lnL);
-//            if (lnL < bestLnL && std::fabs(lnL - bestLnL) > 0.1)
-//                {
-//                for (size_t i=0; i<tempLikes.size(); i++)
-//                    std::cout << i << " " << tempLikes[i] << std::endl;
-//                tree->print();
-//                Msg::error("Going downhill!");
-//                }
             if (std::abs(lnL - bestLnL) < 1.0e-6)
                 break;
             }
         if (bestLnL < lnL)
             bestLnL = lnL;
-        //std::cout << "rep=" << rep << " -- " << lnL << " " << bestLnL << std::endl;
         }
         
     return bestLnL;

@@ -197,6 +197,96 @@ Tree::Tree(std::string newickStr, std::vector<std::string>& taxonNames) {
     setDescriptor();
 }
 
+Tree::Tree(BitSet* newickBitSet, std::vector<std::string>& taxonNames) {
+
+    int numTaxonBits = numBits((int)taxonNames.size());
+    Node* p = nullptr;
+    int ntips = 0;
+    numNodes = 0;
+
+    bool stopTraversal = false;
+    int i = 0;
+    while (stopTraversal == false)
+        {
+        bool bit0 = (*newickBitSet)[i++];
+        bool bit1 = (*newickBitSet)[i++];
+        std::cout << bit0 << bit1 << std::endl;
+
+        if (bit0 == false && bit1 == true) // 01 -> "("
+            {
+            Node* newNode = addNode();
+            newNode->setBrlen(-1.0);
+            if (p == nullptr)
+                {
+                root = newNode;
+                }
+            else 
+                {
+                newNode->setAncestor(p);
+                p->addDescendant(newNode);
+                }
+            p = newNode;
+            }
+        else if (bit0 == true && bit1 == false) // 10 -> ")" or ","
+            {
+            if (p->getAncestor() == nullptr)
+                Msg::error("Cannot move down tree when building Newick tree");
+            p = p->getAncestor();
+            }
+        else if (bit0 == true && bit1 == true) // 11 -> ";"
+            {
+            stopTraversal = true;
+            }
+        else if (bit0 == false && bit1 == false) // 00 -> taxon number followed by index for taxon
+            {
+            int idx = 0;
+            int power2 = pow(2.0,numTaxonBits-1);
+            for (int j=0; j<numTaxonBits; j++, i++)
+                {
+                idx += power2 * (int)((*newickBitSet)[i]);
+                power2 /= 2;
+                }
+            
+            Node* newNode = addNode();
+            newNode->setIndex(idx);
+            newNode->setName(taxonNames[idx]);
+            newNode->setIsTip(true);
+            newNode->setAncestor(p);
+            p->addDescendant(newNode);
+            p = newNode;
+            ntips++;
+            }
+        }
+
+    // get postorder traversal sequence
+    initializeDownPassSequence();
+
+    numTips = static_cast<int>(taxonNames.size());
+    if (ntips != numTips)
+        Msg::error("Mismatch in names during construction of Newick formatted tree");
+        
+    rerootOnTipZero();
+
+    // relabel interior nodes
+    int intIdx = numTips;
+    for (Node* p : downPassSequence)
+        {
+        if (p->getIsTip() == false)
+            p->setIndex(intIdx++);
+        }
+        
+    // set branch lengths
+    for (Node* p : downPassSequence)
+        {
+        if (p == root)
+            p->setBrlen(0.0);
+        else
+            p->setBrlen(0.02);
+        }
+
+    setDescriptor();
+}
+
 Tree::Tree(Node* rootNode, std::vector<std::string>& taxonNames) {
 
     numTips = static_cast<int>(taxonNames.size());
@@ -347,11 +437,33 @@ Node* Tree::findTaxonNamed(std::string tName) {
     return nullptr;
 }
 
+BitSet* Tree::getCompactRepresentation(void) {
+
+    // 00 : next numTaxonBits are a taxon index
+    // 01 : (
+    // 10 : ) or ,
+    // 11 : ;
+    
+    int numTaxonBits = numBits(numTips);
+    int numCommas = numTips - 1;
+    int numLeftParantheses = numTips - 2;
+    int numRightParantheses = numTips - 2;
+    size_t numBits = 2 * (numLeftParantheses + numRightParantheses + numCommas) + numTips * (2 + numTaxonBits) + 2;
+    
+    BitSet* treeBits = new BitSet(numBits);
+    size_t pos = 0;
+    writeTreeBits(root->getFirstDescendant(), treeBits, pos, numTaxonBits);
+    treeBits->set(pos++);
+    treeBits->set(pos++);
+    
+    return treeBits;
+}
+
 std::string Tree::getNewickString(void) {
 
     std::stringstream strm;
-    writeTree(root, strm);
-    strm << ";";
+    writeTree(root->getFirstDescendant(), strm);
+    strm << ");";
     return strm.str();
 }
 
@@ -414,6 +526,17 @@ void Tree::markDnClsAsDirty(void) {
         else 
             p->setDirtyDnCl(false);
         }
+}
+
+int Tree::numBits(int n) {
+
+    int bits = 0;
+    do 
+        {
+        ++bits;
+        n >>= 1;
+        } while (n);
+    return bits;
 }
 
 void Tree::passDown(Node* p) {
@@ -617,10 +740,11 @@ void Tree::writeTree(Node* p, std::stringstream& strm) {
     if (p == nullptr)
         return;
     
-    // Special handling for root node
-    if (p == root)
-        {
-        // Root node - just process descendants
+    // special handling for root node
+    if (p == root->getFirstDescendant())
+        {        
+        // three-way split
+        strm << "(";
         bool first = true;
         for (Node* d = p->getFirstDescendant(); d != nullptr; d = d->getNextSibling())
             {
@@ -629,10 +753,11 @@ void Tree::writeTree(Node* p, std::stringstream& strm) {
             first = false;
             writeTree(d, strm);
             }
+        strm << "," << root->getName();
         }
     else if (p->getIsTip() == false)
         {
-        // Internal node
+        // internal node
         strm << "(";
         
         bool first = true;
@@ -644,12 +769,79 @@ void Tree::writeTree(Node* p, std::stringstream& strm) {
             writeTree(d, strm);
             }
             
-        strm << ")" << ":" << p->getBrlen();
+        strm << ")";
         }
     else
         {
-        // Tip node
-        strm << p->getName() << ":" << p->getBrlen();
+        // tip node
+        strm << p->getName();
         }
 }
 
+void Tree::writeTreeBits(Node* p, BitSet* bitSet, size_t& pos, int numTaxonBits) {
+
+    if (p == nullptr)
+        return;
+    
+    // special handling for root node
+    if (p == root->getFirstDescendant())
+        {        
+        // three-way split
+        pos++;              // 0
+        bitSet->set(pos++); // 1
+        bool first = true;
+        for (Node* d = p->getFirstDescendant(); d != nullptr; d = d->getNextSibling())
+            {
+            if (!first)
+                {
+                bitSet->set(pos++); // 1
+                pos++;              // 0
+                }
+            first = false;
+            writeTreeBits(d, bitSet, pos, numTaxonBits);
+            }
+        bitSet->set(pos++); // 1
+        pos++;              // 0
+        pos++;              // 0
+        pos++;              // 0
+        uint32_t n = root->getIndex();
+        for (size_t i=0; i<numTaxonBits; i++, pos++) 
+            {
+            if (n & (1ULL << (numTaxonBits - 1 - i)))
+                bitSet->set(pos);
+            }
+        }
+    else if (p->getIsTip() == false)
+        {
+        // internal node
+        pos++;              // 0
+        bitSet->set(pos++); // 1
+        
+        bool first = true;
+        for (Node* d = p->getFirstDescendant(); d != nullptr; d = d->getNextSibling())
+            {
+            if (!first)
+                {
+                bitSet->set(pos++); // 1
+                pos++;              // 0
+                }
+            first = false;
+            writeTreeBits(d, bitSet, pos, numTaxonBits);
+            }
+            
+        bitSet->set(pos++); // 1
+        pos++;              // 0
+        }
+    else
+        {
+        // tip node
+        pos++;
+        pos++;
+        uint32_t n = p->getIndex();
+        for (size_t i=0; i<numTaxonBits; i++, pos++) 
+            {
+            if (n & (1ULL << (numTaxonBits - 1 - i)))
+                bitSet->set(pos);
+            }
+        }
+}
