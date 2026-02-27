@@ -19,8 +19,8 @@ class Mcmc {
                                             Mcmc(void) = delete;
                                             Mcmc(RandomVariable* r, ThreadPool* tp, Alignment* a, TreeList* tl, TreeSpace* ts);
                                            ~Mcmc(void);
-        void                                run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities);
-        void                                run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, int numChains, double temperature);
+        void                                run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, double power);
+        void                                run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, double power, int numChains, double temperature);
     
     private:
         void                                calculateMaximumLikelihoods(TreeList& treeList, uint64_t currentTree, std::vector<uint64_t>& neighbors, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo);

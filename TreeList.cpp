@@ -26,8 +26,7 @@ double TreeList::lnLikelihood(Tree* t) {
     TreeMap::iterator it = map.find(t->getHash());
     if (it == map.end())
         {
-        TreeInfo info(t,0.0,false);
-        map.insert(std::make_pair(t->getHash(),info));
+        map.emplace(t->getHash(), TreeInfo(t, 0.0, false));
         }
     
     return it->second.lnL;
@@ -35,14 +34,12 @@ double TreeList::lnLikelihood(Tree* t) {
 
 void TreeList::addTree(Tree* t) {
 
-    TreeInfo info(t,0.0,false);
-    map.insert(std::make_pair(t->getHash(),info));
+    map.emplace(t->getHash(), TreeInfo(t, 0.0, false));
 }
 
 void TreeList::addTree(Tree* t, double x) {
 
-    TreeInfo info(t,x,true);
-    map.insert(std::make_pair(t->getHash(),info));
+    map.emplace(t->getHash(), TreeInfo(t, x, false));
 }
 
 double TreeList::distance(uint64_t t1, uint64_t t2) {
@@ -148,5 +145,6 @@ void TreeList::print(void) {
 }
 
 void TreeList::reserve(size_t capacity) {
+
     map.reserve(capacity);
 }

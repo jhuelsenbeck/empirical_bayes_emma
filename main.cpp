@@ -28,7 +28,7 @@ int main(int argc, char* argv[]) {
     
     // read the alignment file
     Alignment alignment(UserSettings::userSettings().getInputFileName());
-    alignment.twist(&rng, 20);
+    alignment.twist(&rng, 1);
     alignment.print(UserSettings::userSettings().getOutputFileName());
     alignment.summarize();
     alignment.compress();
@@ -45,7 +45,8 @@ int main(int argc, char* argv[]) {
         
     // Markov chain Monte Carlo exploration of tree space
     Mcmc mcmc(&rng, &pool, &alignment, &treeList, &treeSpace);
-    mcmc.run(treeProbabilities);
+    mcmc.run(treeProbabilities, 0.5);
+    //mcmc.run(treeProbabilities, 0.5, 10, 0.05);
     
     return EXIT_SUCCESS;
 }
