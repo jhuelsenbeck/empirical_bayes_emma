@@ -11,6 +11,14 @@ TreeSamples::TreeSamples(TreeList* tl) : treeList(tl), numSamples(0) {
 
 }
 
+double TreeSamples::getTreeProbability(uint64_t treeHash) {
+
+    TreeCountMap::iterator it = treeCounts.find(treeHash);
+    if (it != treeCounts.end())
+        return (double)it->second / numSamples;
+    return 0.0;
+}
+
 void TreeSamples::print(std::map<uint64_t,std::pair<double,double>>& treeProbabilities) {
 
     // collect entries from the map

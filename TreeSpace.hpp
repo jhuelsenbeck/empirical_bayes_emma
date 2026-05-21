@@ -12,6 +12,7 @@ struct TreeSpaceNode {
     uint64_t                    treeHash;
     float                       lnL;
     int                         peakId;
+    TreeSpaceNode*              peakPtr;
     int                         distance;
     bool                        isPeak;
     std::set<TreeSpaceNode*>    neighbors;
@@ -20,12 +21,15 @@ struct PeakInfo {
 
     uint64_t                    treeHash;
     float                       lnL;
+    float                       minLnL;
+    int                         peakId;
     int                         basinSize;
-    int                         closestPeakDistance;
-    uint64_t                    closestPeak;
-    double                      averageDistanceToPeaks;
 };
+class Peak;
+class TreeSamples;
 typedef std::unordered_map<uint64_t,TreeSpaceNode*> TreeNodesMap;
+typedef std::unordered_map<uint64_t,double> TreeProbMap;
+typedef std::unordered_map<uint64_t,Peak*> PeakMap;
 
 
 
@@ -33,10 +37,17 @@ class TreeSpace {
 
     public:
                                 TreeSpace(void) = delete;
-                                TreeSpace(TreeList* tl);
+                                TreeSpace(TreeList* tl, TreeNeighborhood* neighbors);
                                ~TreeSpace(void);
         void                    characterize(void);
+        Peak*                   findPeak(uint64_t treeHash);
+        int                     findPeakIdForTreeWithHash(uint64_t treeHash);
+        Peak*                   findPeakWithId(int id);
         TreeSpaceNode*          getTree(uint64_t treeHash);
+        double                  getTreeProbabiity(uint64_t treeHash);
+        int                     graphDistance(const TreeSpaceNode* a, const TreeSpaceNode* b);
+        void                    printPosterior(void);
+        void                    printPosterior(TreeSamples* samples);
     
     private:
         void                    adjacentTreeDistances(uint64_t treeHash);
@@ -47,6 +58,8 @@ class TreeSpace {
         TreeList*               treeList;
         TreeSpaceNode*          root;
         TreeNodesMap            treeNodes;
+        PeakMap                 peaks;
+        TreeProbMap             treeProbabilities;
 };
 
 #endif

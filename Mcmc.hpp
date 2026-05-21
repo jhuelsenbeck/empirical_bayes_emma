@@ -5,11 +5,14 @@
 #include <vector>
 class Alignment;
 class LikelihoodCalculator;
+class NeighborValues;
 class RandomVariable;
 class TreeList;
 class ThreadPool;
 class Tree;
 class TreeList;
+class TreeNeighborhood;
+class TreeSamples;
 class TreeSpace;
 
 
@@ -19,18 +22,19 @@ class Mcmc {
                                             Mcmc(void) = delete;
                                             Mcmc(RandomVariable* r, ThreadPool* tp, Alignment* a, TreeList* tl, TreeSpace* ts);
                                            ~Mcmc(void);
-        void                                run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, double power);
-        void                                run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, double power, int numChains, double temperature);
+        TreeSamples*                        getSamples(void) { return samples; }
+        void                                run(TreeNeighborhood* neighborhood, double power);
+        void                                run(TreeNeighborhood* neighborhood, double power, int numChains, double temperature);
     
     private:
-        void                                calculateMaximumLikelihoods(TreeList& treeList, uint64_t currentTree, std::vector<uint64_t>& neighbors, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo);
+        double                              calculateMaximumLikelihood(NeighborValues& vals);
         std::pair<int,int>                  chooseChains(int numChains);
         double                              chooseTree(std::vector<std::pair<uint64_t, double>>& neighborhoodInfo, uint64_t& tree);
+        int                                 coldChainIndex(std::vector<int>& chainIndices);
         double                              findTreeProbability(std::vector<std::pair<uint64_t, double>>& neighborhoodInfo, uint64_t& tree);
         LikelihoodCalculator*               getCalculator(void);
         double                              heat(int i, double temperature);
-        void                                normalize(double power, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo);
-        void                                print(std::map<uint64_t,std::pair<double,double>>& treeProbabilities);
+        void                                normalize(double power, NeighborValues& neighbors);
         void                                printToScreen(int n, double curLnL, double newLnL, size_t treeListSize);
         void                                returnCalculator(LikelihoodCalculator* calculator);
         Alignment*                          alignment;
@@ -38,6 +42,7 @@ class Mcmc {
         ThreadPool*                         threadPool;
         TreeList*                           treeList;
         TreeSpace*                          treeSpace;
+        TreeSamples*                        samples;
         int                                 chainLength;
         int                                 printFrequency;
         int                                 sampleFrequency;

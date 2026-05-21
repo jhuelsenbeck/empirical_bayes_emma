@@ -8,7 +8,9 @@
 #include "ncl.h"
 #include "Alignment.hpp"
 #include "Msg.hpp"
+#include "Node.hpp"
 #include "RandomVariable.hpp"
+#include "Tree.hpp"
 #include "UserSettings.hpp"
 
 
@@ -84,6 +86,129 @@ Alignment::Alignment(std::vector<std::string> tn, int nr, int nc) :
     for (size_t i=0; i<nr; i++)
         for (size_t j=0; j<numSites; j++)
             matrix[i][j] = 0;
+}
+
+Alignment::Alignment(Alignment& a, int nt, RandomVariable* rng) :
+    matrix(nullptr), patternCount(nullptr), numTaxa(0), numSites(0), isCompressed(false) {
+
+    numTaxa = nt;
+    numSites = a.numSites;
+
+    matrix = new int*[numTaxa];
+    matrix[0] = new int[numTaxa * numSites];
+    for (size_t i=1; i<numTaxa; i++)
+        matrix[i] = matrix[i-1] + numSites;
+    for (size_t i=0; i<numTaxa; i++)
+        for (size_t j=0; j<numSites; j++)
+            matrix[i][j] = 0;
+            
+    std::vector<int> taxonIndices(a.numTaxa);
+    for (int i=0; i<a.numTaxa; i++)
+        taxonIndices[i] = i;
+    while (taxonIndices.size() > numTaxa)
+        {
+        int whichIndex = (int)(rng->uniformRv()*taxonIndices.size());
+        taxonIndices[whichIndex] = taxonIndices[taxonIndices.size()-1];
+        taxonIndices.pop_back();
+        }
+    sort(taxonIndices.begin(),taxonIndices.end());
+    
+    for (int i=0; i<taxonIndices.size(); i++)
+        taxonNames.push_back(a.taxonNames[i]);
+
+    for (int i=0; i<numTaxa; i++)
+        {
+        for (int j=0; j<numSites; j++)
+            matrix[i][j] = a.matrix[taxonIndices[i]][j];
+        }
+}
+
+Alignment::Alignment(std::vector<std::string> tn, std::string newickString, int nc, RandomVariable* rng) : 
+    matrix(nullptr), patternCount(nullptr), numTaxa(0), numSites(0), isCompressed(false) {
+    
+    numTaxa = (int)tn.size();
+    numSites = nc;
+    for (int i=0; i<numTaxa; i++)
+        taxonNames.push_back(tn[i]);
+    
+    Tree t(newickString, taxonNames, false);
+    //t.print();
+    
+    int** tempMatrix = new int*[t.getNumNodes()];
+    tempMatrix[0] = new int[t.getNumNodes()*numSites];
+    for (int i=1; i<t.getNumNodes(); i++)
+        tempMatrix[i] = tempMatrix[i-1] + numSites;
+    for (int i=0; i<t.getNumNodes(); i++)
+        for (int j=0; j<numSites; j++)
+            tempMatrix[i][j] = 0;
+
+    std::vector<Node*>& dpSeq = t.getDownPassSequence();
+    for (std::vector<Node*>::reverse_iterator it=dpSeq.rbegin(); it != dpSeq.rend(); it++)
+        {
+        Node* p = *it;
+        if (p == t.getRoot())
+            {
+            for (int i=0; i<numSites; i++)
+                {
+                int nuc = (int)(rng->uniformRv()*4.0);
+                tempMatrix[p->getIndex()][i] = nuc;
+                }
+            }
+        else 
+            {
+            double rate = (double)1.0/3.0;
+            
+            double brlen = p->getBrlen();
+            for (int i=0; i<numSites; i++)
+                {
+                int currentNuc = tempMatrix[p->getAncestor()->getIndex()][i];
+                double pos = 0.0;
+                while (pos < brlen)
+                    {
+                    pos += -log(rng->uniformRv()) / 1.0; // JC69 rate is 1.0
+                    if (pos < brlen)
+                        {
+                        double u = rng->uniformRv();
+                        double sum = 0.0;
+                        for (int j=0; j<4; j++)
+                            {
+                            if (j != currentNuc)
+                                {
+                                sum += rate;
+                                if (u < sum)
+                                    {
+                                    currentNuc = j;
+                                    break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                tempMatrix[p->getIndex()][i] = currentNuc;
+                }
+            }
+        }
+
+    matrix = new int*[numTaxa];
+    matrix[0] = new int[numTaxa * numSites];
+    for (size_t i=1; i<numTaxa; i++)
+        matrix[i] = matrix[i-1] + numSites;
+    for (size_t i=0; i<numTaxa; i++)
+        for (size_t j=0; j<numSites; j++)
+            matrix[i][j] = 0;
+    
+    for (Node* p : dpSeq)
+        {
+        int nodeIdx = p->getIndex();
+        if (p->getIsTip() == true)
+            {
+            for (int i=0; i<numSites; i++)
+                matrix[nodeIdx][i] = pow(2.0,tempMatrix[nodeIdx][i]);
+            }
+        }
+        
+    delete [] tempMatrix[0];
+    delete [] tempMatrix;
 }
 
 Alignment::~Alignment(void) {
@@ -509,81 +634,44 @@ void Alignment::listTaxa(void) {
 -------------------------------------------------------------------*/
 int Alignment::nucID(char nuc) {
 
-	char		n;
-	
+	char n = nuc;
 	if (nuc == 'U' || nuc == 'u')
 		n = 'T';
-	else
-		n = nuc;
 
 	if (n == 'A' || n == 'a')
-		{
 		return 1;
-		}
 	else if (n == 'C' || n == 'c')
-		{
 		return 2;
-		}
 	else if (n == 'G' || n == 'g')
-		{
 		return 4;
-		}
 	else if (n == 'T' || n == 't')
-		{
 		return 8;
-		}
 	else if (n == 'R' || n == 'r')
-		{
 		return 5;
-		}
 	else if (n == 'Y' || n == 'y')
-		{
 		return 10;
-		}
 	else if (n == 'M' || n == 'm')
-		{
 		return 3;
-		}
 	else if (n == 'K' || n == 'k')
-		{
 		return 12;
-		}
 	else if (n == 'S' || n == 's')
-		{
 		return 6;
-		}
 	else if (n == 'W' || n == 'w')
-		{
 		return 9;
-		}
 	else if (n == 'H' || n == 'h')
-		{
 		return 11;
-		}
 	else if (n == 'B' || n == 'b')
-		{
 		return 14;
-		}
 	else if (n == 'V' || n == 'v')
-		{
 		return 7;
-		}
 	else if (n == 'D' || n == 'd')
-		{
 		return 13;
-		}
 	else if (n == 'N' || n == 'n')
-		{
 		return 15;
-		}
 	else if (n == '-')
-		{
 		return 15;
-		}
 	else if (n == '?')
-		{
 		return 15;
-		}
 	else
 		return -1;
 }

@@ -8,6 +8,7 @@
 #include "Threads.hpp"
 #include "Tree.hpp"
 #include "TreeList.hpp"
+#include "TreeNeighborhood.hpp"
 #include "TreeSpace.hpp"
 #include "UserSettings.hpp"
 
@@ -27,26 +28,42 @@ int main(int argc, char* argv[]) {
     UserSettings::userSettings().print();
     
     // read the alignment file
-    Alignment alignment(UserSettings::userSettings().getInputFileName());
-    alignment.twist(&rng, 1);
+    Alignment originalAlignment(UserSettings::userSettings().getInputFileName());
+    //Alignment& alignment = originalAlignment;
+    Alignment alignment(originalAlignment, 9, &rng);
     alignment.print(UserSettings::userSettings().getOutputFileName());
     alignment.summarize();
     alignment.compress();
     
-    BitSetFactory::getFactory().initialize(alignment.getNumTaxa());
-    TreeList treeList(alignment.getTaxonNames());
+    // simulate an alignment
+    std::string newickString = "((((T1:0.1,T2:0.1):0.1,T3:0.1):0.1,(T4:0.1,T5:0.1):0.1):0.1,((T6:0.1,T7:0.1):0.1,(T8:0.1,T9:0.1):0.1):0.1);";
+    std::vector<std::string> taxonNames = {"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"};
+    Alignment simulatedAlignment(taxonNames, newickString, 1000, &rng);
+    simulatedAlignment.twist(&rng, 20);
+    simulatedAlignment.summarize();
+    simulatedAlignment.compress();
     
-    std::map<uint64_t,std::pair<double,double>> treeProbabilities;
-    ExhaustiveSearch exhaustive(&alignment, &treeList, &pool);
-    exhaustive.enumerateAllTrees(treeProbabilities);
+    Alignment& data = alignment;
+    BitSetFactory::getFactory().initialize(data.getNumTaxa());
     
-    TreeSpace treeSpace(&treeList);
+    TreeList treeList(data.getTaxonNames());
+    TreeNeighborhoodNni nniNeighborhood(&treeList);
+    TreeNeighborhoodNni2 nni2Neighborhood(&treeList);
+    TreeNeighborhoodTbr tbrNeighborhood(&treeList);
+    TreeNeighborhood& neighborhood = tbrNeighborhood;
+    
+    ExhaustiveSearch exhaustive(&data, &treeList, &pool);
+    
+    TreeSpace treeSpace(&treeList, &neighborhood);
     treeSpace.characterize();
+    treeSpace.printPosterior();
         
     // Markov chain Monte Carlo exploration of tree space
-    Mcmc mcmc(&rng, &pool, &alignment, &treeList, &treeSpace);
-    mcmc.run(treeProbabilities, 0.5);
-    //mcmc.run(treeProbabilities, 0.5, 10, 0.05);
+    Mcmc mcmc(&rng, &pool, &data, &treeList, &treeSpace);
+    mcmc.run(&neighborhood, 0.1);
+    treeSpace.printPosterior(mcmc.getSamples());
+    mcmc.run(&neighborhood, 0.0);
+    treeSpace.printPosterior(mcmc.getSamples());
     
     return EXIT_SUCCESS;
 }

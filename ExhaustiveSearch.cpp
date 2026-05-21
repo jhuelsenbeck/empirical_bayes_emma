@@ -8,6 +8,7 @@
 #include "Threads.hpp"
 #include "Tree.hpp"
 #include "TreeList.hpp"
+#include "TreeSpace.hpp"
 
 
 
@@ -16,6 +17,9 @@ ExhaustiveSearch::ExhaustiveSearch(Alignment* aln, TreeList* tl, ThreadPool* tp)
 
     taxonNames = treeList->getTaxonNames();
     numTaxa = static_cast<int>(taxonNames.size());
+    treesEnumerated = false;
+    
+    enumerateAllTrees();
 }
 
 ExhaustiveSearch::~ExhaustiveSearch(void) {
@@ -226,7 +230,7 @@ std::vector<Tree*> ExhaustiveSearch::searchAndCollect(void) {
     return trees;
 }
 
-void ExhaustiveSearch::enumerateAllTrees(std::map<uint64_t,std::pair<double,double>>& treeProbabilities) {
+void ExhaustiveSearch::enumerateAllTrees(void) {
 
     // enumerate all of the trees, adding each to the TreeList object
     search([this](Node* root, int treeNum) {
@@ -248,7 +252,7 @@ void ExhaustiveSearch::enumerateAllTrees(std::map<uint64_t,std::pair<double,doub
     // calculate the maximum likelihood for each tree in treeList
     int barWidth = 60, numAsterices = 0;
     std::cout << "   Maximum likelihood estimation for all trees:" << std::endl;
-    std::cout << "     [";
+    std::cout << "   * [";
     for (int i=0; i<barWidth; i++) 
         {
         if ((i+1) % (int)(barWidth*0.1) == 0 && i+1 != barWidth)
@@ -257,12 +261,10 @@ void ExhaustiveSearch::enumerateAllTrees(std::map<uint64_t,std::pair<double,doub
             std::cout << "-";
         }
     std::cout << "]" << std::endl;
-    std::cout << "     [";
+    std::cout << "   * [";
     
     size_t cnt = 0, treeCnt = 0;
-    double bestLnL = 1.0;
-    std::vector<std::pair<double,uint64_t>> probs;
-    probs.reserve(treeList->size());
+    bestLnL = 1.0;
     for (auto& [key,val] : treeList->getTreeList())
         {
         calculators[cnt].setTree(val.getTree());
@@ -294,7 +296,6 @@ void ExhaustiveSearch::enumerateAllTrees(std::map<uint64_t,std::pair<double,doub
                 else if (x > bestLnL)
                     bestLnL = x;
                 calculators[i].getTreeInfo()->lnL = x;
-                probs.push_back( std::make_pair(x,calculators[i].getTreeInfo()->getTree()->getHash()) );
                 }
             cnt = 0;
             }
@@ -302,35 +303,8 @@ void ExhaustiveSearch::enumerateAllTrees(std::map<uint64_t,std::pair<double,doub
         
     // print final newline after progress bar completion
     std::cout << "]" << std::endl << std::endl;
-        
-    // rescale the maximum likelihoods to calculate the posterior probability of each tree
-    double sum = 0.0;
-    for (size_t i=0; i<probs.size(); i++)
-        {
-        probs[i].first -= bestLnL;
-        double x = std::exp(probs[i].first);
-        probs[i].first = x;
-        sum += x;
-        }
-    double factor = 1.0 / sum;
-    for (size_t i=0; i<probs.size(); i++)
-        probs[i].first *= factor;
-    std::sort(probs.begin(), probs.end(), [](const auto& a, const auto& b) {
-              return a.first > b.first; });
-
-    // show the 99% credible set of trees
-    std::cout << "   True posterior probability distribution: " << std::endl;
-    sum = 0.0;
-    for (size_t i=0; i<probs.size(); i++)
-        {
-        sum += probs[i].first;
-        std::cout << "      " << std::setw(20) << probs[i].second << " " << probs[i].first << std::endl;
-        std::pair<double,double> probsPair = std::make_pair(probs[i].first,0.0);
-        treeProbabilities.insert(std::make_pair(probs[i].second,probsPair));
-        if (sum > 0.99)
-            break;
-        }
-    std::cout << std::endl;
+    
+    treesEnumerated = true;
 }
 
 /*-------| returnScratchNodes |-----------------------------------------

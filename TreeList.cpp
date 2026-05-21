@@ -21,17 +21,6 @@ TreeList::~TreeList(void) {
         delete it->second.getTree();
 }
 
-double TreeList::lnLikelihood(Tree* t) {
-
-    TreeMap::iterator it = map.find(t->getHash());
-    if (it == map.end())
-        {
-        map.emplace(t->getHash(), TreeInfo(t, 0.0, false));
-        }
-    
-    return it->second.lnL;
-}
-
 void TreeList::addTree(Tree* t) {
 
     map.emplace(t->getHash(), TreeInfo(t, 0.0, false));
@@ -136,6 +125,18 @@ bool TreeList::isTreeInList(uint64_t treeHash) {
         return false;
     return true;
 }
+
+double TreeList::lnLikelihood(Tree* t) {
+
+    TreeMap::iterator it = map.find(t->getHash());
+    if (it == map.end())
+        {
+        map.emplace(t->getHash(), TreeInfo(t, 0.0, false));
+        }
+    
+    return it->second.lnL;
+}
+
 
 void TreeList::print(void) {
 

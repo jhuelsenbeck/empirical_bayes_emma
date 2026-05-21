@@ -101,7 +101,7 @@ Tree::Tree(RandomVariable* rng, std::vector<std::string>& taxonNames) {
     setDescriptor();
 }
 
-Tree::Tree(std::string newickStr, std::vector<std::string>& taxonNames) {
+Tree::Tree(std::string newickStr, std::vector<std::string>& taxonNames, bool useDescriptor) {
 
     std::vector<std::string> tokens = tokenizeNewickString(newickStr);
     
@@ -175,7 +175,7 @@ Tree::Tree(std::string newickStr, std::vector<std::string>& taxonNames) {
     if (ntips != numTips)
         Msg::error("Mismatch in names during construction of Newick formatted tree");
         
-    rerootOnTipZero();
+    //rerootOnTipZero();
 
     // relabel interior nodes
     int intIdx = numTips;
@@ -194,7 +194,8 @@ Tree::Tree(std::string newickStr, std::vector<std::string>& taxonNames) {
             p->setBrlen(0.02);
         }
 
-    setDescriptor();
+    if (useDescriptor == true)
+        setDescriptor();
 }
 
 Tree::Tree(BitSet* newickBitSet, std::vector<std::string>& taxonNames) {
@@ -321,6 +322,122 @@ Tree::Tree(Node* rootNode, std::vector<std::string>& taxonNames) {
     setDescriptor();
 }
 
+Tree::Tree(Tree* t0, Tree* t1, Node* p0, Node* p1) {
+
+    // check the configuration
+    if (t0->findNodeWithIndex(0) == nullptr)
+        Msg::error("Expecting t0 to have the tip with index 0");
+    if (t0->hasNode(p0) == false)
+        Msg::error("Cannot find p0 in tree t0");
+    if (t1->hasNode(p1) == false)
+        Msg::error("Cannot find p1 in tree t1");
+        
+    // merge nodes into this tree
+    std::vector<Node*> newNodes0, newNodes1;
+    Node* root0 = clone(*t0, newNodes0);
+    Node* root1 = clone(*t1, newNodes1);
+    Node* c0 = newNodes0[p0->getOffset()];
+    Node* c1 = newNodes1[p1->getOffset()];
+
+    // add a node to the upper subtree if it has more than one node
+    if (t0->numTips > 1 && t1->numTips > 1)
+        {
+        // insert a node in t1
+        Node* newNode = addNode(newNodes1);
+        Node* p = c1;
+        Node* pAnc = p->getAncestor();
+        pAnc->removeDescendant(p);
+        pAnc->addDescendant(newNode);
+        newNode->setAncestor(pAnc);
+        newNode->addDescendant(p);
+        p->setAncestor(newNode);
+        newNode->setBrlen(p->getBrlen()*0.5);
+        p->setBrlen(newNode->getBrlen());
+        rerootOnNode(newNode, newNodes1);
+        root1 = newNode;
+        }
+    
+    // merge nodes
+    for (Node* p : newNodes0)
+        this->nodes.push_back(p);
+    for (Node* p : newNodes1)
+        this->nodes.push_back(p);
+    for (int i=0; i<this->nodes.size(); i++)
+        nodes[i]->setOffset(i);
+    numNodes = (int)nodes.size();
+    numTips = t0->getNumTips() + t1->getNumTips();
+    
+    // rearrange node pointers
+    Node* newNode1 = addNode();
+    if (t0->getNumNodes() == 1)
+        {
+        root = root1;
+        Node* d = c0;
+        Node* p = c1;
+        Node* pAnc = p->getAncestor();
+        pAnc->removeDescendant(p);
+        pAnc->addDescendant(newNode1);
+        newNode1->setAncestor(pAnc);
+        newNode1->addDescendant(d);
+        newNode1->addDescendant(p);
+        p->setAncestor(newNode1);
+        d->setAncestor(newNode1);
+        rerootOnTipZero();
+        }
+    else if (t1->getNumNodes() == 1)
+        {
+        root = root0;
+        Node* d = c1;
+        Node* p = c0;
+        Node* pAnc = p->getAncestor();
+        pAnc->removeDescendant(p);
+        pAnc->addDescendant(newNode1);
+        newNode1->setAncestor(pAnc);
+        newNode1->addDescendant(d);
+        newNode1->addDescendant(p);
+        p->setAncestor(newNode1);
+        d->setAncestor(newNode1);
+        initializeDownPassSequence();
+        }
+    else 
+        {
+        root = root0;
+        Node* d = root1;
+        Node* p = c0;
+        Node* pAnc = p->getAncestor();
+        pAnc->removeDescendant(p);
+        pAnc->addDescendant(newNode1);
+        newNode1->setAncestor(pAnc);
+        newNode1->addDescendant(d);
+        newNode1->addDescendant(p);
+        p->setAncestor(newNode1);
+        d->setAncestor(newNode1);
+        initializeDownPassSequence();
+        }
+        
+    // initialize down pass sequence
+    initializeDownPassSequence();
+
+    // relabel interior nodes
+    int intIdx = numTips;
+    for (Node* p : downPassSequence)
+        {
+        if (p->getIsTip() == false)
+            p->setIndex(intIdx++);
+        }
+        
+    // set branch lengths
+    for (Node* p : downPassSequence)
+        {
+        if (p == root)
+            p->setBrlen(0.0);
+        else
+            p->setBrlen(0.02);
+        }
+
+    setDescriptor();
+}
+
 Tree::~Tree(void) {
 
     // free memory here
@@ -342,6 +459,15 @@ Node* Tree::addNode(void) {
     nodes.push_back(newNode);
     newNode->setIndex(numNodes);
     numNodes++;
+    return newNode;
+}
+
+Node* Tree::addNode(std::vector<Node*>& nodeVec) {
+
+    NodeFactory& nf = NodeFactory::nodeFactory();
+    Node* newNode = nf.getNode();
+    newNode->setOffset((int)nodeVec.size());
+    nodeVec.push_back(newNode);
     return newNode;
 }
 
@@ -386,6 +512,65 @@ void Tree::clone(const Tree& t) {
         this->downPassSequence[i] = nodes[t.downPassSequence[i]->getOffset()];
 }
 
+Node* Tree::clone(const Tree& t, std::vector<Node*>& nodeVec) {
+
+    if (nodeVec.size() > 0)
+        Msg::error("Can only clone into an empty vector");
+        
+    // set up nodes for this tree
+    for (int i=0; i<t.numNodes; i++)
+        addNode(nodeVec);
+    
+    // specify the root
+    Node* tempRoot = nodeVec[t.root->getOffset()];
+    
+    // deep copy of node information
+    for (int i=0; i<t.numNodes; i++)
+        {
+        Node* p = nodeVec[i];
+        Node* q = t.nodes[i];
+        
+        p->setIndex(q->getIndex());
+        p->setIsTip(q->getIsTip());
+        p->setBrlen(q->getBrlen());
+        p->setName(q->getName());
+        
+        if (q->getAncestor() != nullptr)
+            p->setAncestor( nodeVec[q->getAncestor()->getOffset()] );
+        else
+            p->setAncestor(nullptr);
+        p->removeAllDescendants();
+        for (Node* r = q->getFirstDescendant(); r != nullptr; r = r->getNextSibling())
+            p->addDescendant( nodeVec[r->getOffset()] );
+        }
+        
+    return tempRoot;
+}
+
+void Tree::collapseSingletonInternalNode(Node* n) {
+
+    if (n == nullptr || n->getIsTip() == true)
+        return;
+
+    if (n->getNumDescendants() != 1)
+        return;
+
+    Node* anc = n->getAncestor();
+    if (anc == nullptr)
+        return;      // cannot collapse root
+
+    Node* child = n->getFirstDescendant();
+    if (child == nullptr)
+        return;
+
+    // remove n from its ancestor
+    anc->removeDescendant(n);
+
+    // attach the child directly to the ancestor
+    anc->addDescendant(child);
+    child->setAncestor(anc);
+}
+
 void Tree::deleteNodes(void) {
 
     NodeFactory& nf = NodeFactory::nodeFactory();
@@ -422,6 +607,38 @@ Node* Tree::cloneNodeStructure(Node* originalNode) {
         }   
     
     return newNode;
+}
+
+void Tree::debugPrint(std::string header) {
+
+    std::cout << header << std::endl;
+    for (size_t i=0; i<nodes.size(); i++) 
+        {
+        Node* p = nodes[i];
+        std::cout << "   " << i << " -- ";
+        std::cout << p << " ";
+        std::cout << std::setw(3) << p->getIndex() << " offset = " << std::setw(3) << p->getOffset() << " ( ";
+        if (p->getAncestor() != nullptr)
+            std::cout << "a_" << p->getAncestor()->getIndex() << " ";
+        else 
+            std::cout << "a_NULL ";
+        for (Node* d=p->getFirstDescendant(); d != nullptr; d = d->getNextSibling())
+            std::cout << d->getIndex() << " ";
+        std::cout << ")";
+        if (p == root)
+            std::cout << " <- Root";
+        std::cout << std::endl;
+        }
+}
+
+Node* Tree::findNodeWithIndex(int idx) {
+
+    for (Node* p : downPassSequence)
+        {
+        if (p->getIndex() == idx)
+            return p;
+        }
+    return nullptr;
 }
 
 Node* Tree::findTaxonNamed(std::string tName) {
@@ -465,6 +682,16 @@ std::string Tree::getNewickString(void) {
     writeTree(root->getFirstDescendant(), strm);
     strm << ");";
     return strm.str();
+}
+
+bool Tree::hasNode(Node* p) {
+
+    for (int i=0; i<nodes.size(); i++)
+        {
+        if (nodes[i] == p)
+            return true;
+        }
+    return false;
 }
 
 int Tree::indexForTaxonName(std::string& name, std::vector<std::string>& taxonNames) {
@@ -539,6 +766,39 @@ int Tree::numBits(int n) {
     return bits;
 }
 
+int Tree::numTbrNeighbors(void) {
+
+    int num = 0;
+    for (Node* p : downPassSequence)
+        {
+        if (p->getAncestor() == nullptr)
+            continue;
+            
+        if (p->getIsTip() == true)
+            {
+            p->scratchInt = 1;
+            num += (2 * (numTips-1) - 3);
+            }
+        else 
+            {
+            int nTips1 = 0;
+            for (Node* d=p->getFirstDescendant(); d != nullptr; d = d->getNextSibling())
+                nTips1 += d->scratchInt;
+            p->scratchInt = nTips1;
+            int nTips2 = numTips - nTips1;
+            int n1 = 1;
+            if (nTips1 > 2)
+                n1 = 2 * nTips1 - 3;
+            int n2 = 1;
+            if (nTips2 > 2)
+                n2 = 2 * nTips2 - 3;
+            num += n1 * n2;
+            }
+        }
+        
+    return num;
+}
+
 void Tree::passDown(Node* p) {
 
     if (p != nullptr)
@@ -552,12 +812,271 @@ void Tree::passDown(Node* p) {
 
 void Tree::print(void) {
 
+    std::cout << "   Number of tips  = " << numTips << std::endl;
+    std::cout << "   Number of nodes = " << numNodes << " (" << nodes.size() << ")" << std::endl;
     showNode(root, 0);
+}
+
+void Tree::print(std::string header) {
+    
+    std::cout << "   " << header << std::endl;
+    print();
 }
 
 void Tree::print(Node* subtree) {
 
     showNode(subtree, 0);
+}
+
+void Tree::removeNodesAbove(Node* newRoot) {
+
+    // set the flag for all nodes above (and including) newRoot to true
+    setAllFlags(false);
+    newRoot->setFlag(true);
+    for (std::vector<Node*>::reverse_iterator it=downPassSequence.rbegin(); it != downPassSequence.rend(); it++)
+        {
+        Node* anc = (*it)->getAncestor();
+        if (anc == nullptr)
+            continue;
+        if (anc->getFlag() == true)
+            (*it)->setFlag(true);
+        }
+
+    // add all nodes to be removed to a set
+    std::unordered_set<Node*> nodesToDelete;
+    for (Node* p : nodes)
+        {
+        if (p->getFlag() == true)
+            nodesToDelete.insert(p);
+        }
+ 
+     // split the tree at that point
+    newRoot->getAncestor()->removeDescendant(newRoot);
+    newRoot->setAncestor(nullptr);
+    newRoot->setNextSibling(nullptr);
+    initializeDownPassSequence();
+
+    if (removeSuperfluousNodes(nodesToDelete) == true)
+        initializeDownPassSequence();
+   
+    // remove the nodes from the nodes vector of the tree
+    std::unordered_set<Node*> removeSet(nodesToDelete.begin(), nodesToDelete.end());
+    nodes.erase(
+        std::remove_if(nodes.begin(), nodes.end(),
+            [&](Node* p)
+                {
+                return removeSet.count(p) > 0;
+                }),
+        nodes.end());
+    for (int i=0; i<nodes.size(); i++)
+        nodes[i]->setOffset(i);
+        
+    // return the nodes to the factory
+    NodeFactory& nf = NodeFactory::nodeFactory();
+    for (Node* p : removeSet)
+        nf.returnToPool(p);
+        
+    numNodes = (int)downPassSequence.size();
+    numTips = 0;
+    for (Node* p : downPassSequence)
+        {
+        if (p->getIsTip() == true)
+            numTips++;
+        }
+}
+
+void Tree::removeNodesBelow(Node* newRoot) {
+
+    // set the flag for all nodes above (and including) newRoot to true
+    setAllFlags(false);
+    newRoot->setFlag(true);
+    for (std::vector<Node*>::reverse_iterator it=downPassSequence.rbegin(); it != downPassSequence.rend(); it++)
+        {
+        Node* anc = (*it)->getAncestor();
+        if (anc == nullptr)
+            continue;
+        if (anc->getFlag() == true)
+            (*it)->setFlag(true);
+        }
+    
+    // add all nodes to be removed to a set
+    std::unordered_set<Node*> nodesToDelete;
+    for (Node* p : nodes)
+        {
+        if (p->getFlag() == false)
+            nodesToDelete.insert(p);
+        }
+        
+    // split the tree at that point
+    newRoot->getAncestor()->removeDescendant(newRoot);
+    newRoot->setAncestor(nullptr);
+    newRoot->setNextSibling(nullptr);
+    root = newRoot;
+    initializeDownPassSequence();
+    
+    // find tip with smallest index
+    int smallestIdx = numNodes;
+    for (Node* p : downPassSequence)
+        {
+        if (p->getIsTip() == false)
+            continue;
+        if (p->getIndex() < smallestIdx)
+            smallestIdx = p->getIndex();
+        }
+    
+    // reroot the tree on the tip with the smallest index
+    rerootOnNode(findNodeWithIndex(smallestIdx));
+    root->setBrlen(0.0);
+    
+    if (removeSuperfluousNodes(nodesToDelete) == true)
+        initializeDownPassSequence();
+
+    // remove the nodes from the nodes vector of the tree
+    std::unordered_set<Node*> removeSet(nodesToDelete.begin(), nodesToDelete.end());
+    nodes.erase(
+        std::remove_if(nodes.begin(), nodes.end(),
+            [&](Node* p)
+                {
+                return removeSet.count(p) > 0;
+                }),
+        nodes.end());
+    for (int i=0; i<nodes.size(); i++)
+        nodes[i]->setOffset(i);
+        
+    // return the nodes to the factory
+    NodeFactory& nf = NodeFactory::nodeFactory();
+    for (Node* p : removeSet)
+        nf.returnToPool(p);
+
+    numNodes = (int)downPassSequence.size();
+    numTips = 0;
+    for (Node* p : downPassSequence)
+        {
+        if (p->getIsTip() == true)
+            numTips++;
+        }
+}
+
+bool Tree::removeSuperfluousNodes(std::unordered_set<Node*>& removedNodes) {
+
+    size_t nBefore = removedNodes.size();
+    bool nodesRemoved = false;
+    do {
+        nodesRemoved = false;
+        for (Node* p : downPassSequence)
+            {
+            if (p != root && p->getNumDescendants() == 1)
+                {
+                collapseSingletonInternalNode(p);
+                removedNodes.insert(p);
+                nodesRemoved = true;
+                }
+            }
+        if (nodesRemoved == true)
+            initializeDownPassSequence();
+        } while (nodesRemoved == true);
+        
+    size_t nAfter = removedNodes.size();
+        
+    return (nBefore != nAfter);
+}
+
+void Tree::rerootOnNode(Node* rootNode) {
+
+    if (rootNode == nullptr) 
+        Msg::error("Cannot root on a null tip");
+    
+    // if tip 0 is already the root, nothing to do
+    if (rootNode == root)
+        return;
+            
+    // store the path from tip 0 to the current root
+    std::vector<Node*> pathToRoot;
+    Node* current = rootNode;
+    while (current != nullptr) 
+        {
+        pathToRoot.push_back(current);
+        current = current->getAncestor();
+        }
+        
+    // reverse the path direction, making rootNode the new root
+    for (size_t i=0; i<pathToRoot.size()-1; i++) 
+        {
+        Node* child = pathToRoot[i];
+        Node* parent = pathToRoot[i + 1];
+        Node* grandparent = parent->getAncestor(); // capture before any mutation
+                
+        // detach child from parent's descendant list
+        parent->removeDescendant(child);
+        
+        // detach parent from grandparent's descendant list
+        if (grandparent != nullptr)
+            grandparent->removeDescendant(parent);
+        
+        // make parent a child of child (reverse the relationship)
+        parent->setAncestor(child);
+        child->addDescendant(parent);
+        
+        // handle branch lengths -- the branch length stays with the node that's being moved
+        if (i == 0) 
+            {
+            // first reversal: rootNode becomes root, so it has no branch length
+            parent->setBrlen(child->getBrlen());
+            child->setBrlen(0.0); // Root has no branch length
+            }
+        }
+    
+    // set rootNode as the new root
+    rootNode->setAncestor(nullptr);
+    root = rootNode;
+            
+    // reinitialize the down pass sequence since tree topology changed
+    initializeDownPassSequence();
+}
+
+void Tree::rerootOnNode(Node* rootNode, std::vector<Node*>& nodeVec) {
+
+    if (rootNode->getAncestor() == nullptr) 
+        return;
+                
+    // store the path from tip 0 to the current root
+    std::vector<Node*> pathToRoot;
+    Node* current = rootNode;
+    while (current != nullptr) 
+        {
+        pathToRoot.push_back(current);
+        current = current->getAncestor();
+        }
+        
+    // reverse the path direction, making rootNode the new root
+    for (size_t i=0; i<pathToRoot.size()-1; i++) 
+        {
+        Node* child = pathToRoot[i];
+        Node* parent = pathToRoot[i + 1];
+        Node* grandparent = parent->getAncestor(); // capture before any mutation
+                
+        // detach child from parent's descendant list
+        parent->removeDescendant(child);
+        
+        // detach parent from grandparent's descendant list
+        if (grandparent != nullptr)
+            grandparent->removeDescendant(parent);
+        
+        // make parent a child of child (reverse the relationship)
+        parent->setAncestor(child);
+        child->addDescendant(parent);
+        
+        // handle branch lengths -- the branch length stays with the node that's being moved
+        if (i == 0) 
+            {
+            // first reversal: rootNode becomes root, so it has no branch length
+            parent->setBrlen(child->getBrlen());
+            child->setBrlen(0.0); // Root has no branch length
+            }
+        }
+    
+    // set rootNode as the new root
+    rootNode->setAncestor(nullptr);
 }
 
 void Tree::rerootOnTipZero(void) {
@@ -572,54 +1091,10 @@ void Tree::rerootOnTipZero(void) {
             break;
             }
         }
-    
     if (tipZero == nullptr) 
         Msg::error("Could not find tip with index 0 for rerooting");
-    
-    // if tip 0 is already the root, nothing to do
-    if (tipZero == root)
-        return;
-            
-    // store the path from tip 0 to the current root
-    std::vector<Node*> pathToRoot;
-    Node* current = tipZero;
-    while (current != nullptr) 
-        {
-        pathToRoot.push_back(current);
-        current = current->getAncestor();
-        }
         
-    // reverse the path direction, making tip 0 the new root
-    for (size_t i = 0; i < pathToRoot.size() - 1; i++) 
-        {
-        Node* child = pathToRoot[i];
-        Node* parent = pathToRoot[i + 1];
-                
-        // remove descendant from parent's descendant list
-        parent->removeDescendant(child);
-        
-        // clear descendants's sibling pointer to avoid stale references
-        child->setNextSibling(nullptr);
-        
-        // make parent a child of child (reverse the relationship)
-        parent->setAncestor(child);
-        child->addDescendant(parent);
-        
-        // handle branch lengths - the branch length stays with the node that's being moved
-        if (i == 0) 
-            {
-            // first reversal: tip 0 becomes root, so it has no branch length
-            parent->setBrlen(child->getBrlen());
-            child->setBrlen(0.0); // Root has no branch length
-            }
-        }
-    
-    // set tipZero as the new root
-    tipZero->setAncestor(nullptr);
-    root = tipZero;
-            
-    // reinitialize the down pass sequence since tree topology changed
-    initializeDownPassSequence();
+    rerootOnNode(tipZero);
 }
 
 void Tree::setAllFlags(bool tf) {
@@ -679,6 +1154,7 @@ void Tree::showNode(Node* p, int indent) {
 
     if (p != nullptr)
         {
+        std::cout << "   ";
         for (int i=0; i<indent; i++)
             std::cout << " ";
         std::cout << p->getIndex();
@@ -701,6 +1177,20 @@ void Tree::showNode(Node* p, int indent) {
         for (Node* d = p->getFirstDescendant(); d != nullptr; d = d->getNextSibling())
             showNode(d, indent + 3);
         }
+}
+
+std::pair<Tree*,Tree*> Tree::split(Node* p) {
+
+    Tree* t1 = new Tree(*this);
+    Tree* t2 = new Tree(*this);
+    
+    t1->removeNodesAbove(t1->findNodeWithIndex(p->getIndex()));
+    t2->removeNodesBelow(t2->findNodeWithIndex(p->getIndex()));
+    
+    std::pair<Tree*,Tree*> subtrees;
+    subtrees.first = t1;
+    subtrees.second = t2;
+    return subtrees;
 }
 
 std::vector<std::string> Tree::tokenizeNewickString(std::string newickStr) {

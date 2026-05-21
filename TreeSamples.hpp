@@ -13,6 +13,8 @@ class TreeSamples {
     public:
                         TreeSamples(void) = delete;
                         TreeSamples(TreeList* tl);
+        void            clear(void) { treeCounts.clear(); numSamples = 0; }
+        double          getTreeProbability(uint64_t treeHash);
         void            print(std::map<uint64_t,std::pair<double,double>>& treeProbabilities);
         void            sampleTree(uint64_t treeHash);
     

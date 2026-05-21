@@ -3,6 +3,7 @@
 #include "Alignment.hpp"
 #include "LikelihoodCalculator.hpp"
 #include "Mcmc.hpp"
+#include "Msg.hpp"
 #include "RandomVariable.hpp"
 #include "UserSettings.hpp"
 #include "Tree.hpp"
@@ -21,59 +22,69 @@ Mcmc::Mcmc(RandomVariable* r, ThreadPool* tp, Alignment* a, TreeList* tl, TreeSp
     printFrequency = settings.getPrintFrequency();
     sampleFrequency = settings.getSampleFrequency();
     burn = chainLength * settings.getBurnin();
+    
+    samples = new TreeSamples(treeList);
 }
 
 Mcmc::~Mcmc(void) {
 
     for (size_t i=0; i<allocatedCalculators.size(); i++)
         delete allocatedCalculators[i];
+    delete samples;
 }
 
-void Mcmc::calculateMaximumLikelihoods(TreeList& treeList, uint64_t currentTree, std::vector<uint64_t>& neighbors, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo) {
+double Mcmc::calculateMaximumLikelihood(NeighborValues& vals) {
 
-    // figure out which likelihoods we have already computed and which need to be computed
-    neighborhoodInfo.resize(neighbors.size());
-    activeCalculators.clear();
-    for (size_t i=0; i<neighbors.size(); i++)
-        {
-        TreeInfo& treeInfo = treeList.getTreeInfo(neighbors[i]);
-        if (treeInfo.isLikelihoodCalculated() == true)
-            {
-            neighborhoodInfo[i] = std::make_pair(neighbors[i], treeInfo.lnL);
-            }
-        else    
-            {
-            LikelihoodCalculator* calculator = getCalculator();
-            calculator->setTree(treeInfo.getTree());
-            calculator->setOffset(i);
-            activeCalculators.push_back(calculator);
-            }
-        }
-        
-    // push all of the jobs to the thead pool and wait for completion
-    for (LikelihoodCalculator* calculator : activeCalculators)
-        threadPool->pushTask(calculator);
-    threadPool->wait();
+    if (activeCalculators.size() > 0)
+        Msg::error("Outstanding calculators");
     
-    // fill out the information for this neighborhood
-    for (LikelihoodCalculator* calculator : activeCalculators)
-        neighborhoodInfo[calculator->getOffset()] = std::make_pair(calculator->getTree()->getHash(), calculator->getResult());
-
-    // return all of the calculators to the pool
-    for (LikelihoodCalculator* calculator : activeCalculators)
-        returnCalculator(calculator);
-        
-    // add all of the calculated likelihoods to the TreeList object
-    for (size_t i=0; i<neighborhoodInfo.size(); i++)
+    // TBR neighborhoods can produce O(n^3) reconnection candidates, easily
+    // overflowing the thread pool's fixed-size queue. Process in batches
+    // bounded by the queue capacity; wait() drains each batch before the
+    // next push, so the queue is guaranteed empty at the top of each pass.
+    const size_t batchSize = threadPool->getQueueCapacity();
+    
+    size_t i = 0;
+    while (i < vals.size())
         {
-        TreeInfo& treeInfo = treeList.getTreeInfo(neighborhoodInfo[i].first);
-        if (treeInfo.isLikelihoodCalculated() == false)
+        // gather up to batchSize calculators, skipping vals entries whose
+        // tree pointer is null (already-known topologies needing no eval)
+        while (i < vals.size() && activeCalculators.size() < batchSize)
             {
-            treeInfo.lnL = neighborhoodInfo[i].second;
-            treeInfo.setLikelihoodCalculated(true);
+            Tree* t = std::get<1>(vals[i]);
+            if (t != nullptr)
+                {
+                LikelihoodCalculator* calculator = getCalculator();
+                calculator->setTree(t);
+                calculator->setOffset(i);
+                activeCalculators.push_back(calculator);
+                }
+            i++;
             }
+        
+        // dispatch this batch and wait for it to finish
+        for (LikelihoodCalculator* calculator : activeCalculators)
+            threadPool->pushTask(calculator);
+        threadPool->wait();
+        
+        // collect results, free trees, return calculators to the pool
+        for (LikelihoodCalculator* calculator : activeCalculators)
+            {
+            Tree* t = calculator->getTree();
+            double lnL = calculator->getResult();
+            size_t idx = calculator->getOffset();
+            
+            treeList->addTree(t, lnL);
+            std::get<1>(vals[idx]) = nullptr;
+            std::get<2>(vals[idx]) = lnL;
+            delete t;
+            
+            returnCalculator(calculator);
+            }
+        activeCalculators.clear();
         }
-    //treeList.print();
+    
+    return 0.0;
 }
 
 std::pair<int,int> Mcmc::chooseChains(int numChains) {
@@ -99,6 +110,20 @@ double Mcmc::chooseTree(std::vector<std::pair<uint64_t, double>>& neighborhoodIn
             }
         }
     return 0.0;
+}
+
+int Mcmc::coldChainIndex(std::vector<int>& chainIndices) {
+
+    int coldChainIdx = 0;
+    for (int i=0; i<chainIndices.size(); i++)
+        {
+        if (chainIndices[i] == 0)
+            {
+            coldChainIdx = i;
+            break;
+            }
+        }
+    return coldChainIdx;
 }
 
 double Mcmc::findTreeProbability(std::vector<std::pair<uint64_t, double>>& neighborhoodInfo, uint64_t& tree) {
@@ -132,55 +157,24 @@ double Mcmc::heat(int i, double temperature) {
     return 1.0 / (1.0 + i*temperature);
 }
 
-void Mcmc::normalize(double power, std::vector<std::pair<uint64_t, double>>& neighborhoodInfo) {
+void Mcmc::normalize(double power, NeighborValues& neighbors) {
 
-    double maxLnL = neighborhoodInfo[0].second;
-    for (size_t i=1; i<neighborhoodInfo.size(); i++)
+    double maxLnL = std::get<2>(neighbors[0]);
+    for (size_t i=1; i<neighbors.size(); i++)
         {
-        if (neighborhoodInfo[i].second > maxLnL)
-            maxLnL = neighborhoodInfo[i].second;
+        if (std::get<2>(neighbors[i]) > maxLnL)
+            maxLnL = std::get<2>(neighbors[i]);
         }
     double sum = 0.0;
-    for (size_t i=0; i<neighborhoodInfo.size(); i++)
+    for (size_t i=0; i<neighbors.size(); i++)
         {
-        double x = std::exp((neighborhoodInfo[i].second - maxLnL) * power);
+        double x = std::exp((std::get<2>(neighbors[i]) - maxLnL) * power);
         sum += x;
-        neighborhoodInfo[i].second = x;
+        std::get<2>(neighbors[i]) = x;
         }
     double factor = 1.0 / sum;
-    for (size_t i=0; i<neighborhoodInfo.size(); i++)
-        neighborhoodInfo[i].second *= factor;
-}
-
-void Mcmc::print(std::map<uint64_t,std::pair<double,double>>& treeProbabilities) {
-
-    size_t numTrees = treeProbabilities.size();
-    std::vector<uint64_t> trees;
-    trees.reserve(numTrees);
-    for (auto& x : treeProbabilities)
-        trees.push_back(x.first);
-        
-    // tree-to-tree distances
-    for (size_t i=0; i<numTrees; i++)
-        {
-        for (size_t j=i+1; j<numTrees; j++)
-            {
-            double d = treeList->distance(trees[i], trees[j]);
-            std::cout << "      d(" << std::setw(20) << trees[i] << "," << std::setw(20) << trees[j] << ") = " << d << std::endl;
-            }
-        }
-        
-    int i = 0;
-    for (auto& x : treeProbabilities)
-        {
-        TreeSpaceNode* nde = treeSpace->getTree(x.first);
-        int basinId = nde->peakId;
-        std::cout << "   * " << ++i << " -- " << x.first << " " << x.second.first;
-        std::cout << " " << x.second.second << " ";
-        std::cout << basinId << " ";
-        std::cout << std::endl;
-        }
-
+    for (size_t i=0; i<neighbors.size(); i++)
+        std::get<2>(neighbors[i]) *= factor;
 }
 
 void Mcmc::printToScreen(int n, double curLnL, double newLnL, size_t treeListSize) {
@@ -197,44 +191,47 @@ void Mcmc::returnCalculator(LikelihoodCalculator* calculator) {
     calculatorPool.push_back(calculator);
 }
 
-void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, double power) {
+void Mcmc::run(TreeNeighborhood* neighborhood, double power) {
 
     std::cout << "   Markov chain Monte Carlo:" << std::endl;
 
     Tree* initialTree = new Tree(rng, alignment->getTaxonNames());
     uint64_t currentTree = initialTree->getHash();
 
-    LikelihoodCalculator* calculator = getCalculator();
-    calculator->setTree(initialTree);
-    double curLnL = calculator->lnLikelihood();
-    treeList->addTree(initialTree, curLnL);
-    returnCalculator(calculator);
+    TreeInfo& treeInfo = treeList->getTreeInfo(currentTree);
+    double curLnL;
+    if (treeInfo.isLikelihoodCalculated() == true)
+        {
+        curLnL = treeInfo.lnL;
+        }
+    else    
+        {
+        LikelihoodCalculator* calculator = getCalculator();
+        calculator->setTree(treeInfo.getTree());
+        curLnL = calculator->lnLikelihood();
+        treeInfo.setLikelihoodCalculated(true);
+        treeInfo.lnL = curLnL;
+        returnCalculator(calculator);
+        }
+    std::cout << "   * Initial likelihood = " << curLnL << std::endl;
+
+    NeighborValues forwardNeighbors;
+    NeighborValues reverseNeighborhood;
     
-    initialTree->print();
-    std::cout << initialTree->getNewickString() << std::endl;
-    BitSet* bs = initialTree->getCompactRepresentation();
-    bs->print();
-    Tree tempTree(bs, alignment->getTaxonNames());
-    tempTree.print();
-    
-    TreeNeighborhoodNni treeSpace(treeList);
-    TreeSamples samples(treeList);
-    std::vector<std::pair<uint64_t, double>> forwardNeighborhood;
-    std::vector<std::pair<uint64_t, double>> reverseNeighborhood;
     int numAccepted = 0;
+    samples->clear();
     
     for (int n=1; n<=chainLength; n++)
         {
-        std::vector<uint64_t>& forwardNeighbors = treeSpace.getNeighbors(currentTree);
-        forwardNeighborhood.clear();
-        calculateMaximumLikelihoods(*treeList, currentTree, forwardNeighbors, forwardNeighborhood);
-        normalize(power, forwardNeighborhood);
+        neighborhood->getNeighbors(currentTree, forwardNeighbors);
+        calculateMaximumLikelihood(forwardNeighbors);
+        normalize(power, forwardNeighbors);
         uint64_t newTree;
         double forwardProbability = chooseTree(forwardNeighborhood, newTree);
         double newLnL = treeList->getTreeInfo(newTree).lnL;
         
         double reverseProbability = forwardProbability;
-        std::vector<uint64_t>& reverseNeighbors = treeSpace.getNeighbors(newTree);
+        std::vector<uint64_t>& reverseNeighbors = neighborhood->getNeighbors(newTree);
         reverseNeighborhood.clear();
         calculateMaximumLikelihoods(*treeList, newTree, reverseNeighbors, reverseNeighborhood);
         normalize(power, reverseNeighborhood);
@@ -243,7 +240,6 @@ void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, d
         double lnLikelihoodRatio = newLnL - curLnL;
         double lnPriorRatio = 0.0;
         double lnProposalRatio = std::log(reverseProbability) - std::log(forwardProbability);
-        lnProposalRatio *= power;
         double lnR = lnLikelihoodRatio + lnPriorRatio + lnProposalRatio;
         
         bool accept = false;
@@ -261,16 +257,13 @@ void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, d
             }
 
         if (n % sampleFrequency == 0 && n >= burn)
-            samples.sampleTree(currentTree);
+            samples->sampleTree(currentTree);
         }
         
-    samples.print(treeProbabilities);
     std::cout << "   Acceptance rate: " << ((double)numAccepted / chainLength) * 100.0 << "%" << std::endl << std::endl;
-    
-    print(treeProbabilities);
 }
 
-void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, double power, int numChains, double temperature) {
+void Mcmc::run(TreeNeighborhood* neighborhood, double power, int numChains, double temperature) {
 
     std::cout << "   Markov chain Monte Carlo:" << std::endl;
 
@@ -294,17 +287,16 @@ void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, d
         }
     returnCalculator(calculator);
     
-    TreeNeighborhoodNni treeSpace(treeList);
-    TreeSamples samples(treeList);
     std::vector<std::pair<uint64_t, double>> forwardNeighborhood;
     std::vector<std::pair<uint64_t, double>> reverseNeighborhood;
     int numAccepted = 0;
+    samples->clear();
     
     for (int n=1; n<=chainLength; n++)
         {
         for (size_t chain=0; chain<numChains; chain++)
             {
-            std::vector<uint64_t>& forwardNeighbors = treeSpace.getNeighbors(currentTree[chain]);
+            std::vector<uint64_t>& forwardNeighbors = neighborhood->getNeighbors(currentTree[chain]);
             forwardNeighborhood.clear();
             calculateMaximumLikelihoods(*treeList, currentTree[chain], forwardNeighbors, forwardNeighborhood);
             normalize(power, forwardNeighborhood);
@@ -313,7 +305,7 @@ void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, d
             double newLnL = treeList->getTreeInfo(newTree).lnL;
             
             double reverseProbability = forwardProbability;
-            std::vector<uint64_t>& reverseNeighbors = treeSpace.getNeighbors(newTree);
+            std::vector<uint64_t>& reverseNeighbors = neighborhood->getNeighbors(newTree);
             reverseNeighborhood.clear();
             calculateMaximumLikelihoods(*treeList, newTree, reverseNeighbors, reverseNeighborhood);
             normalize(power, reverseNeighborhood);
@@ -322,7 +314,6 @@ void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, d
             double lnLikelihoodRatio = (newLnL - curLnL[chain]) * heat(chainIndex[chain], temperature);
             double lnPriorRatio = 0.0;
             double lnProposalRatio = std::log(reverseProbability) - std::log(forwardProbability);
-            lnProposalRatio *= power;
             double lnR = lnLikelihoodRatio + lnPriorRatio + lnProposalRatio;
             
             bool accept = false;
@@ -362,14 +353,11 @@ void Mcmc::run(std::map<uint64_t,std::pair<double,double>>& treeProbabilities, d
                     break;
                     }
                 }
-            samples.sampleTree(currentTree[coldChainIdx]);
+            samples->sampleTree(currentTree[coldChainIdx]);
             }
         }
         
-    samples.print(treeProbabilities);
     std::cout << "   Acceptance rate: " << ((double)numAccepted / chainLength) * 100.0 << "%" << std::endl << std::endl;
-    
-    print(treeProbabilities);
 }
 
 
