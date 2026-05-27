@@ -235,6 +235,37 @@ void Mcmc::openConvergenceLog(void) {
     convergenceLog.flush();
 }
 
+void Mcmc::openTreeFile(void) {
+
+    UserSettings& settings = UserSettings::userSettings();
+    std::string path = settings.getOutputFileName() + ".tre";
+    treeStrm.open(path, std::ios::out | std::ios::trunc);
+    if (treeStrm.is_open() == false)
+        {
+        std::cout << "Warning: could not open tree stream at " << path << std::endl;
+        return;
+        }
+
+    treeStrm << "#NEXUS" << std::endl << std::endl;
+    treeStrm << "begin trees;" << std::endl;
+    treeStrm << "   translate" << std::endl;
+    std::vector<std::string>& tNames = alignment->getTaxonNames();
+    for (size_t i=0; i<tNames.size(); i++)
+        {
+        treeStrm << "      " << i+1 << " " << tNames[i];
+        if (i + 1 != tNames.size())
+            treeStrm << ",";
+        else 
+            treeStrm << ";";
+        treeStrm << std::endl;
+        }
+}
+
+void Mcmc::printTreeToFile(int n, Tree* t) {
+
+    treeStrm << "   tree gen." << n << " = " << t->getNewickString() << std::endl;
+}
+
 void Mcmc::printToScreen(int n, double curLnL, double newLnL) {
 
     if (n % printFrequency == 0 || n == 1)
@@ -283,6 +314,8 @@ void Mcmc::returnCalculator(LikelihoodCalculator* calculator) {
 void Mcmc::run(double power) {
         
     std::cout << "   MCMC:" << std::endl;
+    
+    openTreeFile();
 
     // initialize chain
     Tree* currentTree = new Tree(rng, alignment->getTaxonNames());
@@ -336,6 +369,8 @@ void Mcmc::run(double power) {
         
         samples[0]->sampleTree(currentTree->getHash());
         partitions[0]->addTree(currentTree);
+        if (n % sampleFrequency == 0 || n == 1)
+            printTreeToFile(n, currentTree);
         }
             
     samples[0]->print();
@@ -346,52 +381,59 @@ void Mcmc::run(double power) {
     std::cout << std::endl;
 }
 
-#if 0
 void Mcmc::run(double power, int numRuns) {
 
     std::cout << "   MCMC:" << std::endl;
     std::cout << "   * Number of runs = " << numRuns << std::endl;
+    
+    openTreeFile();
 
     // initialize chain
-    std::vector<double> curLnL(numRuns);
     std::vector<Tree*> currentTree(numRuns);
+    std::vector<double> curLnL(numRuns);
+    for (int run=0; run<numRuns; run++)
+        {
+        currentTree[run] = new Tree(rng, alignment->getTaxonNames());
+        curLnL[run] = calculateMaximumLikelihood(currentTree[run]);
+        }
+        
+    // initialize objects for storing results
     samples.resize(numRuns);
     partitions.resize(numRuns);
-    for (size_t i=0; i<numRuns; i++)
+    for (int run=0; run<numRuns; run++)
         {
-        currentTree[i] = new Tree(rng, alignment->getTaxonNames());
-        curLnL[i] = calculateMaximumLikelihood(currentTree[i]);
-        samples[i] = new TreeSamples(treeList);
-        samples[i]->reserve(numCycles);
-        partitions[i] = new TreePartitions(alignment->getNumTaxa());
+        samples[run] = new TreeSamples(treeCache);
+        samples[run]->reserve(numCycles);
+        partitions[run] = new TreePartitions(alignment->getNumTaxa());
         }
 
-    openConvergenceLog();
-    
     // run chain
-    NeighborValues forwardNeighbors, reverseNeighbors;
-    int nextLogPoint = 1;
-    for (int n=1; n<=numCycles; n++)
+    std::vector<double> forwardProbabilities, reverseProbabilities;
+    for (int n=1, nextLogPoint=1; n<=numCycles; n++)
         {
-        for (size_t i=0; i<numRuns; i++)
+        for (int run=0; run<numRuns; run++)
             {
-            neighborhood->getNeighbors(currentTree[i], forwardNeighbors);
+            std::vector<TreeInfo*>& forwardNeighbors = treeNeighbors->neighbors(currentTree[run]);
             calculateMaximumLikelihood(forwardNeighbors);
-            normalize(power, forwardNeighbors);
-            uint64_t newTree;
-            double forwardProbability = chooseTree(forwardNeighbors, newTree);
-            double newLnL = treeList->getTreeInfo(newTree)->lnL;
+            normalize(power, forwardNeighbors, forwardProbabilities);
+            Tree* newTree = nullptr;
+            double newLnL = 0.0;
+            double forwardProbability = chooseTree(forwardNeighbors, forwardProbabilities, newTree, newLnL);
+            if (newTree == nullptr)
+                Msg::error("newTree is null");
 
             double reverseProbability = forwardProbability;
-            neighborhood->getNeighbors(newTree, reverseNeighbors);
+            std::vector<TreeInfo*>& reverseNeighbors = treeNeighbors->neighbors(newTree);
             calculateMaximumLikelihood(reverseNeighbors);
-            normalize(power, reverseNeighbors);
-            reverseProbability = findTreeProbability(reverseNeighbors, currentTree[i]->getHash());
+            normalize(power, reverseNeighbors, reverseProbabilities);
+            reverseProbability = findTreeProbability(reverseNeighbors, reverseProbabilities, currentTree[run]->getHash());
             
             forwardNeighbors.clear();
             reverseNeighbors.clear();
+            forwardProbabilities.clear();
+            reverseProbabilities.clear();
             
-            double lnLikelihoodRatio = newLnL - curLnL[i];
+            double lnLikelihoodRatio = newLnL - curLnL[run];
             double lnPriorRatio = 0.0;
             double lnProposalRatio = std::log(reverseProbability) - std::log(forwardProbability);
             double lnR = lnLikelihoodRatio + lnPriorRatio + lnProposalRatio;
@@ -402,34 +444,34 @@ void Mcmc::run(double power, int numRuns) {
 
             if (accept == true)
                 {
-                curLnL[i] = newLnL;
-                Tree* temp = currentTree[i];
-                currentTree[i] = treeList->getTree(newTree);
+                curLnL[run] = newLnL;
+                Tree* temp = currentTree[run];
+                currentTree[run] = newTree;
                 delete temp;
                 }
-            }
             
+            samples[run]->sampleTree(currentTree[run]->getHash());
+            partitions[run]->addTree(currentTree[run]);
+            if (n % sampleFrequency == 0 || n == 1)
+                printTreeToFile(n, currentTree[run]);
+
+            if (n == nextLogPoint)
+                {
+                TreePartitions::comparePartitions(partitions);
+                writeConvergenceLine(n);
+                nextLogPoint = (nextLogPoint < 100000) ? nextLogPoint * 10 : nextLogPoint + 100000;
+                }
+            }
         printToScreen(n, curLnL);
-        
-        for (size_t i=0; i<numRuns; i++)
-            {
-            samples[i]->sampleTree(currentTree[i]->getHash());
-            partitions[i]->addTree(currentTree[i]);
-            }
-        if (n == nextLogPoint)
-            {
-            TreePartitions::comparePartitions(partitions);
-            TreeSamples::compareSamples(samples);
-            writeConvergenceLine(n);
-            nextLogPoint = (nextLogPoint < 100000) ? nextLogPoint * 10 : nextLogPoint + 100000;
-            }
         }
             
     TreeSamples::compbinedPrint(samples);
+    TreeSamples::compareSamples(samples);
+    TreePartitions::comparePartitions(partitions);
     
-    for (size_t i=0; i<numRuns; i++)
-        delete currentTree[i];
-    
+    for (int run=0; run<numRuns; run++)
+        delete currentTree[run];
+        
     std::cout << std::endl;
 }
 
@@ -440,6 +482,8 @@ void Mcmc::run(double power, int numRuns, int numChains) {
     std::cout << "   * Number of chains = " << numChains << std::endl;
     std::cout << "   * Temperature = " << temperature << std::endl;
     
+    openTreeFile();
+
     // initialize chain
     std::vector<std::vector<double>> curLnL(numRuns);
     std::vector<std::vector<Tree*>> currentTree(numRuns);
@@ -452,7 +496,6 @@ void Mcmc::run(double power, int numRuns, int numChains) {
         }
     samples.resize(numRuns);
     partitions.resize(numRuns);
-    
     for (size_t i=0; i<numRuns; i++)
         {
         for (size_t j=0; j<numChains; j++)
@@ -461,39 +504,50 @@ void Mcmc::run(double power, int numRuns, int numChains) {
             curLnL[i][j] = calculateMaximumLikelihood(currentTree[i][j]);
             chainIndex[i][j] = (int)j;
             }
-        samples[i] = new TreeSamples(treeList);
+        samples[i] = new TreeSamples(treeCache);
         samples[i]->reserve(numCycles);
         partitions[i] = new TreePartitions(alignment->getNumTaxa());
         }
-
-    openConvergenceLog();
-    
-    // run chain
-    NeighborValues forwardNeighbors, reverseNeighbors;
-    int nextLogPoint = 1;
-    for (int n=1; n<=numCycles; n++)
+        
+    // initialize objects for storing results
+    samples.resize(numRuns);
+    partitions.resize(numRuns);
+    for (int run=0; run<numRuns; run++)
         {
-        for (size_t i=0; i<numRuns; i++)
+        samples[run] = new TreeSamples(treeCache);
+        samples[run]->reserve(numCycles);
+        partitions[run] = new TreePartitions(alignment->getNumTaxa());
+        }
+
+    // run chain
+    std::vector<double> forwardProbabilities, reverseProbabilities;
+    for (int n=1, nextLogPoint=1; n<=numCycles; n++)
+        {
+        for (int run=0; run<numRuns; run++)
             {
-            for (size_t j=0; j<numChains; j++)
+            for (size_t chain=0; chain<numChains; chain++)
                 {
-                neighborhood->getNeighbors(currentTree[i][j], forwardNeighbors);
+                std::vector<TreeInfo*>& forwardNeighbors = treeNeighbors->neighbors(currentTree[run][chain]);
                 calculateMaximumLikelihood(forwardNeighbors);
-                normalize(power, forwardNeighbors);
-                uint64_t newTree;
-                double forwardProbability = chooseTree(forwardNeighbors, newTree);
-                double newLnL = treeList->getTreeInfo(newTree)->lnL;
+                normalize(power, forwardNeighbors, forwardProbabilities);
+                Tree* newTree = nullptr;
+                double newLnL = 0.0;
+                double forwardProbability = chooseTree(forwardNeighbors, forwardProbabilities, newTree, newLnL);
+                if (newTree == nullptr)
+                    Msg::error("newTree is null");
 
                 double reverseProbability = forwardProbability;
-                neighborhood->getNeighbors(newTree, reverseNeighbors);
+                std::vector<TreeInfo*>& reverseNeighbors = treeNeighbors->neighbors(newTree);
                 calculateMaximumLikelihood(reverseNeighbors);
-                normalize(power, reverseNeighbors);
-                reverseProbability = findTreeProbability(reverseNeighbors, currentTree[i][j]->getHash());
+                normalize(power, reverseNeighbors, reverseProbabilities);
+                reverseProbability = findTreeProbability(reverseNeighbors, reverseProbabilities, currentTree[run][chain]->getHash());
                 
                 forwardNeighbors.clear();
                 reverseNeighbors.clear();
+                forwardProbabilities.clear();
+                reverseProbabilities.clear();
                 
-                double lnLikelihoodRatio = (newLnL - curLnL[i][j]) * heat(chainIndex[i][j], temperature);
+                double lnLikelihoodRatio = newLnL - curLnL[run][chain];
                 double lnPriorRatio = 0.0;
                 double lnProposalRatio = std::log(reverseProbability) - std::log(forwardProbability);
                 double lnR = lnLikelihoodRatio + lnPriorRatio + lnProposalRatio;
@@ -504,51 +558,53 @@ void Mcmc::run(double power, int numRuns, int numChains) {
 
                 if (accept == true)
                     {
-                    curLnL[i][j] = newLnL;
-                    Tree* temp = currentTree[i][j];
-                    currentTree[i][j] = treeList->getTree(newTree);
+                    curLnL[run][chain] = newLnL;
+                    Tree* temp = currentTree[run][chain];
+                    currentTree[run][chain] = newTree;
                     delete temp;
                     }
-                }
-
-            // swap
-            std::pair<int,int> idx = chooseChains(numChains);
-            int idx0 = chainIndex[i][idx.first];
-            int idx1 = chainIndex[i][idx.second];
-            double lnR = (curLnL[i][idx.first] * heat(idx1, temperature) + curLnL[i][idx.second] * heat(idx0, temperature));
-            lnR -=  (curLnL[i][idx.first] * heat(idx0, temperature) + curLnL[i][idx.second] * heat(idx1, temperature));
-            if (log(rng->uniformRv()) < lnR)
-                {
-                chainIndex[i][idx.first] = idx1;
-                chainIndex[i][idx.second] = idx0;
+                
                 }
                 
+            // swap
+            std::pair<int,int> idx = chooseChains(numChains);
+            int idx0 = chainIndex[run][idx.first];
+            int idx1 = chainIndex[run][idx.second];
+            double lnR = (curLnL[run][idx.first] * heat(idx1, temperature) + curLnL[run][idx.second] * heat(idx0, temperature));
+            lnR -=  (curLnL[run][idx.first] * heat(idx0, temperature) + curLnL[run][idx.second] * heat(idx1, temperature));
+            if (log(rng->uniformRv()) < lnR)
+                {
+                chainIndex[run][idx.first] = idx1;
+                chainIndex[run][idx.second] = idx0;
+                }
+
+            for (size_t i=0; i<numRuns; i++)
+                {
+                samples[i]->sampleTree(currentTree[run][coldChainIndex(chainIndex[i])]->getHash());
+                partitions[i]->addTree(currentTree[run][coldChainIndex(chainIndex[i])]);
+                }
+            if (n == nextLogPoint)
+                {
+                TreePartitions::comparePartitions(partitions);
+                writeConvergenceLine(n);
+                nextLogPoint = (nextLogPoint < 100000) ? nextLogPoint * 10 : nextLogPoint + 100000;
+                }
             }
             
         printToScreen(n, curLnL, chainIndex);
-        
-        for (size_t i=0; i<numRuns; i++)
-            {
-            samples[i]->sampleTree(currentTree[i][coldChainIndex(chainIndex[i])]->getHash());
-            partitions[i]->addTree(currentTree[i][coldChainIndex(chainIndex[i])]);
-            }
-        if (n == nextLogPoint)
-            {
-            TreePartitions::comparePartitions(partitions);
-            writeConvergenceLine(n);
-            nextLogPoint = (nextLogPoint < 100000) ? nextLogPoint * 10 : nextLogPoint + 100000;
-            }
         }
             
     TreeSamples::compbinedPrint(samples);
+    TreeSamples::compareSamples(samples);
+    TreePartitions::comparePartitions(partitions);
     
-    for (size_t i=0; i<numRuns; i++)
-        for (size_t j=0; j<numChains; j++)
-            delete currentTree[i][j];
-            
+    for (int run=0; run<numRuns; run++)
+        for (int chain=0; chain<numChains; chain++)
+            delete currentTree[run][chain];
+        
     std::cout << std::endl;
 }
-#endif
+
 void Mcmc::writeConvergenceLine(int cycle) {
 
     if (convergenceLog.is_open() == false)

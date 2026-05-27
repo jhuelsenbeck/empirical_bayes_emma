@@ -17,6 +17,7 @@ class BitSetFactory {
         BitSet*                 getBitSet(void);
         int                     getNumAllocated(void) { return static_cast<int>(allocated.size()); }
         int                     getNumInPool(void) { return static_cast<int>(pool.size()); }
+        bool                    getIsInitialized(void) { return isInitialized; }
         void                    initialize(int nt);
         void                    returnToPool(BitSet* bs);
     

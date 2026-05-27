@@ -175,7 +175,7 @@ Tree::Tree(std::string newickStr, std::vector<std::string>& taxonNames, bool use
     if (ntips != numTips)
         Msg::error("Mismatch in names during construction of Newick formatted tree");
         
-    //rerootOnTipZero();
+    rerootOnTipZero();
 
     // relabel interior nodes
     int intIdx = numTips;
@@ -1268,7 +1268,7 @@ void Tree::writeTree(Node* p, std::stringstream& strm) {
             first = false;
             writeTree(d, strm);
             }
-        strm << "," << root->getName();
+        strm << "," << root->getIndex() + 1;
         }
     else if (p->getIsTip() == false)
         {
@@ -1289,7 +1289,8 @@ void Tree::writeTree(Node* p, std::stringstream& strm) {
     else
         {
         // tip node
-        strm << p->getName();
+        strm << p->getIndex() + 1;
+        //strm << p->getName();
         }
 }
 

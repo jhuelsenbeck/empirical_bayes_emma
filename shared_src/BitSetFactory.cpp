@@ -35,6 +35,8 @@ BitSet* BitSetFactory::getBitSet(void) {
 
 void BitSetFactory::initialize(int nt) {
 
+    if (isInitialized == true)
+        Msg::error("BitSet Factory is already initialized");
     numTaxa = nt;
     isInitialized = true;
 }

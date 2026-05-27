@@ -24,8 +24,8 @@ class Mcmc {
                                         Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a);
                                        ~Mcmc(void);
         void                            run(double power);
-//        void                            run(double power, int numRuns);
-//        void                            run(double power, int numRuns, int numChains);
+        void                            run(double power, int numRuns);
+        void                            run(double power, int numRuns, int numChains);
     
     private:
         double                          calculateMaximumLikelihood(Tree* currentTree);
@@ -37,13 +37,16 @@ class Mcmc {
         LikelihoodCalculator*           getCalculator(void);
         double                          heat(int i, double temperature);
         void                            normalize(double power, std::vector<TreeInfo*>& neighbors, std::vector<double>& probs);
+        void                            printTreeToFile(int n, Tree* currentTree);
         void                            printToScreen(int n, double curLnL, double newLnL);
         void                            printToScreen(int n, std::vector<double>& curLnL);
         void                            printToScreen(int n, std::vector<std::vector<double>>& curLnL, std::vector<std::vector<int>>& indices);
         void                            returnCalculator(LikelihoodCalculator* calculator);
         void                            openConvergenceLog(void);
+        void                            openTreeFile(void);
         void                            writeConvergenceLine(int cycle);
         std::ofstream                   convergenceLog;
+        std::ofstream                   treeStrm;
         RandomVariable*                 rng;
         ThreadPool*                     threadPool;
         Alignment*                      alignment;
