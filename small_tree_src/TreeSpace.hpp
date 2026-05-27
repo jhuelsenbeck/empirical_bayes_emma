@@ -4,8 +4,9 @@
 #include <set>
 #include <unordered_map>
 #include <vector>
-class TreeList;
-class TreeNeighborhood;
+#include "TreeCache.hpp"
+class TreeLikelihoods;
+class TreeNeighbors;
 
 struct TreeSpaceNode {
 
@@ -37,7 +38,7 @@ class TreeSpace {
 
     public:
                                 TreeSpace(void) = delete;
-                                TreeSpace(TreeList* tl, TreeNeighborhood* neighbors);
+                                TreeSpace(TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn);
                                ~TreeSpace(void);
         void                    characterize(void);
         Peak*                   findPeak(uint64_t treeHash);
@@ -55,7 +56,9 @@ class TreeSpace {
         void                    characterizeBasins(std::unordered_map<uint64_t,int>& basins);
         TreeSpaceNode*          findBestNeighbor(TreeSpaceNode* n);
         uint64_t                steepestAscent(uint64_t startTree);
-        TreeList*               treeList;
+        TreeCache*              treeCache;
+        TreeLikelihoods*        treeLikelihoods;
+        TreeNeighbors*          treeNeighbors;
         TreeSpaceNode*          root;
         TreeNodesMap            treeNodes;
         PeakMap                 peaks;

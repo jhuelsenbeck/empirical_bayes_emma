@@ -36,11 +36,11 @@ int main(int argc, char* argv[]) {
     TreeNeighbors treeNeighbors(&treeCache, &treeNeighborGenerator, alignment.getNumTaxa());
         
     // run chain
-//    Mcmc mcmc1(&rng, &threads, &treeCache, &treeLikelihoods, &treeNeighbors, &alignment);
-//    mcmc1.run(0.1);
+    Mcmc mcmc1(&rng, &threads, &treeCache, &treeLikelihoods, &treeNeighbors, &alignment);
+    mcmc1.run(0.1);
 
-    Mcmc mcmc2(&rng, &threads, &treeCache, &treeLikelihoods, &treeNeighbors, &alignment);
-    mcmc2.run(0.1, 2);
+//    Mcmc mcmc2(&rng, &threads, &treeCache, &treeLikelihoods, &treeNeighbors, &alignment);
+//    mcmc2.run(0.1, 2);
  
 //    Mcmc mcmc3(&rng, &threads, &treeList, neighborhood, &alignment);
 //    mcmc3.run(0.1);

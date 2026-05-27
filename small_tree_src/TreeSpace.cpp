@@ -8,37 +8,36 @@
 #include <utility>
 #include "Msg.hpp"
 #include "Peak.hpp"
-#include "TreeList.hpp"
-#include "TreeNeighborhood.hpp"
+#include "TreeLikelihoods.hpp"
+#include "TreeNeighbors.hpp"
 #include "TreeSamples.hpp"
 #include "TreeSpace.hpp"
 
 
 
-TreeSpace::TreeSpace(TreeList* tl, TreeNeighborhood* neighbors) : treeList(tl) {
+TreeSpace::TreeSpace(TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn) : 
+    treeCache(tc), treeLikelihoods(tl), treeNeighbors(tn) {
         
-    TreeMap& trees = treeList->getTreeList();
-    for (auto& [key,val] : trees)
+    // construct graph
+    for (auto& [key,val] : *treeCache)
         {
         TreeSpaceNode* thisTree = getTree(key);
-        TreeHashVec& ndeNeighbors = neighbors->getNeighbors(key);
+        std::vector<TreeInfo*>& ndeNeighbors = val->neighbors;
         for (size_t i=0; i<ndeNeighbors.size(); i++)
             {
-            TreeSpaceNode* neighboringTree = getTree(ndeNeighbors[i]);
+            TreeSpaceNode* neighboringTree = getTree(ndeNeighbors[i]->hash);
             neighboringTree->neighbors.insert(thisTree);
             thisTree->neighbors.insert(neighboringTree);
             }
-
-        neighbors->clear();
         }
        
     // calculate the exact posterior probability
     double bestLnL = std::numeric_limits<double>::lowest();
-    for (auto& [key,val] : trees)
+    for (auto& [key,val] : *treeCache)
         {
-        if (val.lnL > bestLnL)
-            bestLnL = val.lnL;
-        treeProbabilities.insert( std::make_pair(key,val.lnL) );
+        if (val->lnLikelihood > bestLnL)
+            bestLnL = val->lnLikelihood;
+        treeProbabilities.insert( std::make_pair(key,val->lnLikelihood) );
         }
     double sum = 0.0;
     for (auto& [key,val] : treeProbabilities)
@@ -450,9 +449,12 @@ TreeSpaceNode* TreeSpace::getTree(uint64_t treeHash) {
     if (it == treeNodes.end())
         {
         TreeSpaceNode* newNode = new TreeSpaceNode;
-        TreeInfo& info = treeList->getTreeInfo(treeHash);
+        TreeCacheMap::iterator it = treeCache->find(treeHash);
+        if (it == treeCache->end())
+            Msg::error("Could not find tree when constructing tree space");
+        TreeInfo* info = it->second;
         newNode->treeHash = treeHash;
-        newNode->lnL = info.lnL;
+        newNode->lnL = info->lnLikelihood;
         treeNodes.insert( std::make_pair(treeHash,newNode) );
         return newNode;
         }

@@ -6,9 +6,10 @@
 #include "Mcmc.hpp"
 #include "RandomVariable.hpp"
 #include "Threads.hpp"
-#include "Tree.hpp"
-#include "TreeList.hpp"
-#include "TreeNeighborhood.hpp"
+#include "TreeCache.hpp"
+#include "TreeLikelihoods.hpp"
+#include "TreeNeighborGenerator.hpp"
+#include "TreeNeighbors.hpp"
 #include "TreeSpace.hpp"
 #include "UserSettings.hpp"
 
@@ -20,8 +21,9 @@ int main(int argc, char* argv[]) {
 
     printHeader();
     
-    RandomVariable rng; 
-    ThreadPool pool;
+    // instantiate random variable and thread objects
+    RandomVariable rng;
+    ThreadPool threads;
 
     // read the user settings
     UserSettings::userSettings().readSettings(argc, argv);
@@ -45,25 +47,31 @@ int main(int argc, char* argv[]) {
     
     Alignment& data = alignment;
     BitSetFactory::getFactory().initialize(data.getNumTaxa());
+
+    // calculate likelihoods of all trees
+    TreeCache treeCache;
+    TreeLikelihoods treeLikelihoods(&treeCache);
+    ExhaustiveSearch exhaustive(&data, &treeCache, &treeLikelihoods, &threads);
+    treeLikelihoods.print();
+
+    // generate the neighbors for each tree
+    TreeNeighborGeneratorNNI treeNeighborGenerator(&treeCache);
+    TreeNeighbors treeNeighbors(&treeCache, &treeNeighborGenerator, alignment.getNumTaxa());
+    for (auto& [key,val] : treeCache)
+        treeNeighbors.neighbors(val->tree);
+    treeNeighbors.print();
     
-    TreeList treeList(data.getTaxonNames());
-    TreeNeighborhoodNni nniNeighborhood(&treeList);
-    TreeNeighborhoodNni2 nni2Neighborhood(&treeList);
-    TreeNeighborhoodTbr tbrNeighborhood(&treeList);
-    TreeNeighborhood& neighborhood = tbrNeighborhood;
-    
-    ExhaustiveSearch exhaustive(&data, &treeList, &pool);
-    
-    TreeSpace treeSpace(&treeList, &neighborhood);
+    // determine the tree landscape
+    TreeSpace treeSpace(&treeCache, &treeLikelihoods, &treeNeighbors);
     treeSpace.characterize();
     treeSpace.printPosterior();
         
     // Markov chain Monte Carlo exploration of tree space
-    Mcmc mcmc(&rng, &pool, &data, &treeList, &treeSpace);
-    mcmc.run(&neighborhood, 0.1);
-    treeSpace.printPosterior(mcmc.getSamples());
-    mcmc.run(&neighborhood, 0.0);
-    treeSpace.printPosterior(mcmc.getSamples());
+    Mcmc mcmc(&rng, &threads, &treeCache, &treeLikelihoods, &treeNeighbors, &alignment);
+    mcmc.run(0.1);
+    //treeSpace.printPosterior(mcmc.getSamples());
+    mcmc.run(0.0);
+    //treeSpace.printPosterior(mcmc.getSamples());
     
     return EXIT_SUCCESS;
 }

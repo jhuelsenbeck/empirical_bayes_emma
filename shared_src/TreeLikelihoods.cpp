@@ -1,3 +1,5 @@
+#include <iomanip>
+#include <iostream>
 #include "Tree.hpp"
 #include "TreeLikelihoods.hpp"
 
@@ -20,3 +22,11 @@ double TreeLikelihoods::lnLikelihood(Tree* t) {
     return info->lnLikelihood;
 }
 
+void TreeLikelihoods::print(void) {
+
+    int i = 0;
+    for (auto& [key,val] : *treeCache)
+        {
+        std::cout << std::setw(6) << ++i << " " << std::setw(20) << key << " -- " << std::fixed << std::setprecision(3) << val->lnLikelihood << std::endl;
+        }
+}

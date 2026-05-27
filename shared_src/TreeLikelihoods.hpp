@@ -14,6 +14,7 @@ class TreeLikelihoods {
                         TreeLikelihoods(TreeCache* tc);
         void            addLnLikelihood(Tree* t, double lnL);
         double          lnLikelihood(Tree* t);
+        void            print(void);
     
     private:
         TreeCache*      treeCache;

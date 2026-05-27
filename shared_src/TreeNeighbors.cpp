@@ -1,3 +1,5 @@
+#include <iomanip>
+#include <iostream>
 #include "Msg.hpp"
 #include "Tree.hpp"
 #include "TreeNeighborGenerator.hpp"
@@ -27,3 +29,15 @@ std::vector<TreeInfo*>& TreeNeighbors::neighbors(Tree* t) {
     return tInfo->neighbors;
 }
 
+void TreeNeighbors::print(void) {
+
+    int i = 0;
+    for (auto& [key,val] : *treeCache)
+        {
+        std::cout << std::setw(6) << ++i << " " << std::setw(20) << key << " -- ";
+        for (size_t i=0; i<val->neighbors.size(); i++)
+            std::cout << val->neighbors[i] << " ";
+        std::cout << std::endl;
+        }
+
+}
