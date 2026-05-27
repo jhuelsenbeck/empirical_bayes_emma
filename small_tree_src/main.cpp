@@ -71,8 +71,10 @@ int main(int argc, char* argv[]) {
     mcmc.run(0.1);
     treeSpace.printPosterior(mcmc.getSamples()[0]);
     mcmc.run(0.0);
-    //treeSpace.printPosterior(mcmc.getSamples());
+    treeSpace.printPosterior(mcmc.getSamples()[0]);
     
+    // clean up
+    freeTreeCache(&treeCache);
     return EXIT_SUCCESS;
 }
 

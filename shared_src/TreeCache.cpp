@@ -52,6 +52,8 @@ void freeTreeCache(TreeCache* cache) {
     for (auto& pair : *cache) 
         {
         delete pair.second->compactTree;
+        if (pair.second->tree != nullptr)
+            delete pair.second->tree;
         delete pair.second;
         }
     cache->clear();

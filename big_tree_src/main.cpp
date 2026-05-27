@@ -45,7 +45,7 @@ int main(int argc, char* argv[]) {
 //    Mcmc mcmc3(&rng, &threads, &treeList, neighborhood, &alignment);
 //    mcmc3.run(0.1);
 
+    // clean up
     freeTreeCache(&treeCache);
-
     return EXIT_SUCCESS;
 }
