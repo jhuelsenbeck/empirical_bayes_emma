@@ -69,7 +69,7 @@ int main(int argc, char* argv[]) {
     // Markov chain Monte Carlo exploration of tree space
     Mcmc mcmc(&rng, &threads, &treeCache, &treeLikelihoods, &treeNeighbors, &alignment);
     mcmc.run(0.1);
-    //treeSpace.printPosterior(mcmc.getSamples());
+    treeSpace.printPosterior(mcmc.getSamples()[0]);
     mcmc.run(0.0);
     //treeSpace.printPosterior(mcmc.getSamples());
     

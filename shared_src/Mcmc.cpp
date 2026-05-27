@@ -27,10 +27,7 @@ Mcmc::Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl,
 
 Mcmc::~Mcmc(void) {
 
-    for (TreeSamples* s : samples)
-        delete s;
-    for (TreePartitions* p : partitions)
-        delete p;
+    deleteSamplesAndPartitions();
     for (size_t i=0; i<allocatedCalculators.size(); i++)
         delete allocatedCalculators[i];
 }
@@ -155,6 +152,16 @@ int Mcmc::coldChainIndex(std::vector<int>& chainIndices) {
             }
         }
     return coldChainIdx;
+}
+
+void Mcmc::deleteSamplesAndPartitions(void) {
+
+    for (TreeSamples* s : samples)
+        delete s;
+    for (TreePartitions* p : partitions)
+        delete p;
+    samples.clear();
+    partitions.clear();
 }
 
 double Mcmc::findTreeProbability(std::vector<TreeInfo*>& neighbors, std::vector<double>& probs, uint64_t tree) {
@@ -323,6 +330,7 @@ void Mcmc::run(double power) {
     
     // run chain
     std::vector<double> forwardProbabilities, reverseProbabilities;
+    deleteSamplesAndPartitions();
     samples.push_back(new TreeSamples(treeCache));
     samples[0]->reserve(numCycles);
     partitions.push_back(new TreePartitions(alignment->getNumTaxa()));
@@ -398,6 +406,7 @@ void Mcmc::run(double power, int numRuns) {
         }
         
     // initialize objects for storing results
+    deleteSamplesAndPartitions();
     samples.resize(numRuns);
     partitions.resize(numRuns);
     for (int run=0; run<numRuns; run++)
@@ -494,6 +503,7 @@ void Mcmc::run(double power, int numRuns, int numChains) {
         currentTree[i].resize(numChains);
         chainIndex[i].resize(numChains);
         }
+    deleteSamplesAndPartitions();
     samples.resize(numRuns);
     partitions.resize(numRuns);
     for (size_t i=0; i<numRuns; i++)

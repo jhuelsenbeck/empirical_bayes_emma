@@ -23,6 +23,7 @@ class Mcmc {
                                         Mcmc(void) = delete;
                                         Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a);
                                        ~Mcmc(void);
+        std::vector<TreeSamples*>&      getSamples(void) { return samples; }
         void                            run(double power);
         void                            run(double power, int numRuns);
         void                            run(double power, int numRuns, int numChains);
@@ -33,6 +34,7 @@ class Mcmc {
         std::pair<int,int>              chooseChains(int numChains);
         double                          chooseTree(std::vector<TreeInfo*>& neighbors, std::vector<double>& probs, Tree*& tree, double& lnL);
         int                             coldChainIndex(std::vector<int>& chainIndices);
+        void                            deleteSamplesAndPartitions(void);
         double                          findTreeProbability(std::vector<TreeInfo*>& neighbors, std::vector<double>& probs, uint64_t tree);
         LikelihoodCalculator*           getCalculator(void);
         double                          heat(int i, double temperature);
