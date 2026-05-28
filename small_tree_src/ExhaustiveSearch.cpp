@@ -288,7 +288,7 @@ void ExhaustiveSearch::enumerateAllTrees(void) {
             //std::cout << "\r[";
             for (int i = 0; i < filledWidth-numAsterices; i++) 
                 {
-                std::cout << "*";
+                std::cout << "*" << std::flush;
                 }
             numAsterices = filledWidth;
                                   
