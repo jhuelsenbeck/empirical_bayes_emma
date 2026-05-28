@@ -15,7 +15,7 @@
 
 
 Mcmc::Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a) : 
-    rng(r), threadPool(p), treeCache(tc), treeLikelihoods(tl), treeNeighbors(tn), alignment(a) {
+    rng(r), threadPool(p), alignment(a), treeCache(tc), treeLikelihoods(tl), treeNeighbors(tn) {
 
     UserSettings& settings = UserSettings::userSettings();
     numChains       = settings.getNumChains();

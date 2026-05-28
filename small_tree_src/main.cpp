@@ -30,58 +30,52 @@ int main(int argc, char* argv[]) {
     UserSettings::userSettings().print();
     
     // read the alignment file
-    Alignment originalAlignment(UserSettings::userSettings().getInputFileName());
-    //Alignment& alignment = originalAlignment;
-    Alignment alignment(originalAlignment, 9, &rng);
-    alignment.print(UserSettings::userSettings().getOutputFileName());
-    alignment.summarize();
-    alignment.compress();
-    
-    // simulate an alignment
-    std::string newickString = "((((T1:0.1,T2:0.1):0.1,T3:0.1):0.1,(T4:0.1,T5:0.1):0.1):0.1,((T6:0.1,T7:0.1):0.1,(T8:0.1,T9:0.1):0.1):0.1);";
-    std::vector<std::string> taxonNames = {"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"};
-    Alignment simulatedAlignment(taxonNames, newickString, 1000, &rng);
-    simulatedAlignment.twist(&rng, 20);
-    simulatedAlignment.summarize();
-    simulatedAlignment.compress();
-    
-    Alignment& data = alignment;
-    BitSetFactory::getFactory().initialize(data.getNumTaxa());
+    Alignment* originalAlignment = new Alignment(UserSettings::userSettings().getInputFileName());
+    Alignment* data = originalAlignment;
+    if (originalAlignment->getNumTaxa() > 10)
+        data = new Alignment(*originalAlignment, 10, &rng);
+    data->print(UserSettings::userSettings().getOutputFileName() + ".nex");
+    data->summarize();
+    data->compress();
+    BitSetFactory::getFactory().initialize(data->getNumTaxa());
 
     // calculate likelihoods of all trees
     TreeCache treeCache;
     TreeLikelihoods treeLikelihoods(&treeCache);
-    ExhaustiveSearch exhaustive(&data, &treeCache, &treeLikelihoods, &threads);
-    treeLikelihoods.print();
+    ExhaustiveSearch exhaustive(data, &treeCache, &threads);
 
     // generate the neighbors for each tree
     TreeNeighborGeneratorNNI treeNeighborGenerator(&treeCache);
-    TreeNeighbors treeNeighbors(&treeCache, &treeNeighborGenerator, alignment.getNumTaxa());
+    TreeNeighbors treeNeighbors(&treeCache, &treeNeighborGenerator, data->getNumTaxa());
     for (auto& [key,val] : treeCache)
         treeNeighbors.neighbors(val->tree);
-    treeNeighbors.print();
     
     // determine the tree landscape
-    TreeSpace treeSpace(&treeCache, &treeLikelihoods, &treeNeighbors);
+    TreeSpace treeSpace(&treeCache);
     treeSpace.characterize();
     treeSpace.printPosterior();
+    treeSpace.printPosterior(UserSettings::userSettings().getOutputFileName() + ".true");
         
     // Markov chain Monte Carlo exploration of tree space
-    Mcmc mcmc(&rng, &threads, &treeCache, &treeLikelihoods, &treeNeighbors, &alignment);
-    mcmc.run(0.1);
-    treeSpace.printPosterior(mcmc.getSamples()[0]);
-    mcmc.run(0.0);
-    treeSpace.printPosterior(mcmc.getSamples()[0]);
+//    Mcmc mcmc(&rng, &threads, &treeCache, &treeLikelihoods, &treeNeighbors, &alignment);
+//    mcmc.run(0.1);
+//    treeSpace.printPosterior(mcmc.getSamples()[0]);
+//    mcmc.run(0.0);
+//    treeSpace.printPosterior(mcmc.getSamples()[0]);
     
     // clean up
+    if (originalAlignment->getNumTaxa() > 10)
+        delete data;
+    delete originalAlignment;
     freeTreeCache(&treeCache);
+    
     return EXIT_SUCCESS;
 }
 
 void printHeader(void) {
 
     std::cout << std::endl;
-    std::cout << "   EPIC — Empirical Phylogenetic Inference of Clades" << std::endl;
+    std::cout << "   Bayesian Inference of Phylogeny using Profile Likelihoods" << std::endl;
     std::cout << "   * Running on " << std::thread::hardware_concurrency() << " threads" << std::endl;
     std::cout << "   * John P. Huelsenbeck (University of California, Berkeley)" << std::endl;
     std::cout << "   * Emma Gomez (California State University, Fullerton)" << std::endl;

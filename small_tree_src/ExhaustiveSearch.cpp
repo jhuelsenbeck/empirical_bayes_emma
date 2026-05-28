@@ -9,12 +9,11 @@
 #include "NodeFactory.hpp"
 #include "Threads.hpp"
 #include "Tree.hpp"
-#include "TreeLikelihoods.hpp"
 
 
 
-ExhaustiveSearch::ExhaustiveSearch(Alignment* aln, TreeCache* tc, TreeLikelihoods* tl, ThreadPool* tp) : 
-    alignment(aln), treeCache(tc), treeLikelihoods(tl), threadPool(tp), numTrees(0), scratchRoot(nullptr) {
+ExhaustiveSearch::ExhaustiveSearch(Alignment* aln, TreeCache* tc, ThreadPool* tp) : 
+    alignment(aln), treeCache(tc), threadPool(tp), numTrees(0), scratchRoot(nullptr) {
 
     taxonNames = alignment->getTaxonNames();
     numTaxa = static_cast<int>(taxonNames.size());

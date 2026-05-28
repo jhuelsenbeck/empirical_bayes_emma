@@ -1,3 +1,4 @@
+#include <cstring>
 #include <regex>
 #include "Node.hpp"
 
@@ -5,7 +6,7 @@
 
 Node::Node(void) : 
     ancestor(nullptr), firstDescendant(nullptr), nextSibling(nullptr), 
-    index(0), brlen(0.0), offset(0), isTip(false), flag(false) {
+    brlen(0.0), offset(0), index(0), flag(false), isTip(false), dirtyUpCl(false), dirtyDnCl(false) {
 
     name[0] = '\0';
 }

@@ -10,7 +10,6 @@ class Alignment;
 class Node;
 class ThreadPool;
 class Tree;
-class TreeLikelihoods;
 
 
 
@@ -20,7 +19,7 @@ class ExhaustiveSearch {
         using TreeCallback = std::function<void(Node* root, int treeNum)>;
     
                                     ExhaustiveSearch(void) = delete;
-                                    ExhaustiveSearch(Alignment* aln, TreeCache* tc, TreeLikelihoods* tl, ThreadPool* tp);
+                                    ExhaustiveSearch(Alignment* aln, TreeCache* tc, ThreadPool* tp);
                                    ~ExhaustiveSearch(void);
         void                        search(TreeCallback callback);
         std::vector<Tree*>          searchAndCollect(void);
@@ -35,7 +34,6 @@ class ExhaustiveSearch {
         void                        returnScratchNodes(void);
         Alignment*                  alignment;
         TreeCache*                  treeCache;
-        TreeLikelihoods*            treeLikelihoods;
         ThreadPool*                 threadPool;
         std::vector<std::string>    taxonNames;
         double                      bestLnL;

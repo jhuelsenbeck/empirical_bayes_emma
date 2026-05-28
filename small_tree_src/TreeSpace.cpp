@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -8,15 +9,12 @@
 #include <utility>
 #include "Msg.hpp"
 #include "Peak.hpp"
-#include "TreeLikelihoods.hpp"
-#include "TreeNeighbors.hpp"
 #include "TreeSamples.hpp"
 #include "TreeSpace.hpp"
 
 
 
-TreeSpace::TreeSpace(TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn) : 
-    treeCache(tc), treeLikelihoods(tl), treeNeighbors(tn) {
+TreeSpace::TreeSpace(TreeCache* tc) : treeCache(tc) {
         
     // construct graph
     for (auto& [key,val] : *treeCache)
@@ -517,10 +515,10 @@ void TreeSpace::printPosterior(void) {
     // sort by value (descending)
     std::sort(vec.begin(), vec.end(),
               [](const auto& a, const auto& b) {
-                  return a.second > b.second;  // highest to lowest
+                  return a.second > b.second;
               });
 
-    // print keys (and values if you want)
+    // print keys and values 
     std::cout << "   True posterior probability distribution: " << std::endl;
     double sum = 0.0;
     for (const auto& [key, value] : vec) 
@@ -530,6 +528,32 @@ void TreeSpace::printPosterior(void) {
         if (sum > 0.999)
             break;
         }
+}
+
+void TreeSpace::printPosterior(std::string fileName) {
+
+    std::ofstream strm(fileName);
+    
+    // copy into a vector of pairs
+    std::vector<std::pair<uint64_t,double>> vec(treeProbabilities.begin(), treeProbabilities.end());
+
+    // sort by value (descending)
+    std::sort(vec.begin(), vec.end(),
+              [](const auto& a, const auto& b) {
+                  return a.second > b.second;
+              });
+
+    // print keys and values
+    double sum = 0.0;
+    for (const auto& [key, value] : vec) 
+        {
+        sum += value;
+        strm << "      " << std::setw(20) << key << " -- " << value << " " << sum << "\n";
+        if (sum > 0.999)
+            break;
+        }
+    
+    strm.close();
 }
 
 void TreeSpace::printPosterior(TreeSamples* samples) {

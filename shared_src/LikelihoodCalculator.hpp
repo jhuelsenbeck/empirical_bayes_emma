@@ -8,8 +8,7 @@ class Alignment;
 class ConditionalLikelihoods;
 class Node;
 class Tree;
-class TreeInfo;
-
+struct TreeInfo;
 
 
 class LikelihoodCalculator : public LikelihoodTask {

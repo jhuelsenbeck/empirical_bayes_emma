@@ -131,6 +131,11 @@ void TreeNeighborGeneratorNNI::generateNeighbors(Tree* tree, std::vector<TreeInf
         }
 }
 
+void TreeNeighborGeneratorNNI::generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable*) {
+
+    generateNeighbors(tree, neighbors);
+}
+
 TreeNeighborGeneratorTBR::TreeNeighborGeneratorTBR(TreeCache* tc) : TreeNeighborGenerator(tc) {
 
 }
@@ -197,10 +202,16 @@ void TreeNeighborGeneratorTBR::generateNeighbors(Tree* tree, std::vector<TreeInf
 
 }
 
-TreeNeighborGeneratorRandomTBR::TreeNeighborGeneratorRandomTBR(TreeCache* tc) : TreeNeighborGenerator(tc) {
+void TreeNeighborGeneratorTBR::generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable*) {
 
+    generateNeighbors(tree, neighbors);
 }
 
 void TreeNeighborGeneratorRandomTBR::generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable* rng) {
 
+}
+
+void TreeNeighborGeneratorRandomTBR::generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors) {
+
+    Msg::error("Neighbor generation under random TBR requires a random number generator");
 }

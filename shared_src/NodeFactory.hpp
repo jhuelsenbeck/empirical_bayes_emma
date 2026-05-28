@@ -24,7 +24,6 @@ class NodeFactory {
                            ~NodeFactory(void);
                             NodeFactory(const NodeFactory& tp) = delete;
         size_t              chunkSize;
-        int                 numTaxa;
         std::vector<Node*>  pool;
         std::vector<Node*>  allocated;
 };

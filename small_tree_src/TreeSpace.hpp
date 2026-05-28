@@ -5,8 +5,6 @@
 #include <unordered_map>
 #include <vector>
 #include "TreeCache.hpp"
-class TreeLikelihoods;
-class TreeNeighbors;
 
 struct TreeSpaceNode {
 
@@ -38,7 +36,7 @@ class TreeSpace {
 
     public:
                                 TreeSpace(void) = delete;
-                                TreeSpace(TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn);
+                                TreeSpace(TreeCache* tc);
                                ~TreeSpace(void);
         void                    characterize(void);
         Peak*                   findPeak(uint64_t treeHash);
@@ -48,6 +46,7 @@ class TreeSpace {
         double                  getTreeProbabiity(uint64_t treeHash);
         int                     graphDistance(const TreeSpaceNode* a, const TreeSpaceNode* b);
         void                    printPosterior(void);
+        void                    printPosterior(std::string fileName);
         void                    printPosterior(TreeSamples* samples);
     
     private:
@@ -57,9 +56,6 @@ class TreeSpace {
         TreeSpaceNode*          findBestNeighbor(TreeSpaceNode* n);
         uint64_t                steepestAscent(uint64_t startTree);
         TreeCache*              treeCache;
-        TreeLikelihoods*        treeLikelihoods;
-        TreeNeighbors*          treeNeighbors;
-        TreeSpaceNode*          root;
         TreeNodesMap            treeNodes;
         PeakMap                 peaks;
         TreeProbMap             treeProbabilities;
