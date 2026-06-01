@@ -116,8 +116,8 @@ void TreeNeighborGeneratorNNI::generateNeighbors(Tree* tree, std::vector<TreeInf
         t2->setDescriptor();
                 
         // add the information to neighbors tuple vector and neighborhood map
-        TreeInfo* ti1 = getOrCreateTreeInfo(treeCache, t1);
-        TreeInfo* ti2 = getOrCreateTreeInfo(treeCache, t2);
+        TreeInfo* ti1 = treeCache->getOrCreateTreeInfo(t1);
+        TreeInfo* ti2 = treeCache->getOrCreateTreeInfo(t2);
         neighbors.push_back(ti1);
         neighbors.push_back(ti2);
         if (ti1->hasLnLikelihood == false)
@@ -183,7 +183,7 @@ void TreeNeighborGeneratorTBR::generateNeighbors(Tree* tree, std::vector<TreeInf
                 if (t->getNumNodes() != tree->getNumNodes())
                     Msg::error("Trees have different numbers of nodes");
 
-                TreeInfo* ti = getOrCreateTreeInfo(treeCache, t);
+                TreeInfo* ti = treeCache->getOrCreateTreeInfo(t);
                 neighbors.push_back(ti);
                 if (ti->hasLnLikelihood == false)
                     ti->tree = t;
@@ -205,6 +205,10 @@ void TreeNeighborGeneratorTBR::generateNeighbors(Tree* tree, std::vector<TreeInf
 void TreeNeighborGeneratorTBR::generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable*) {
 
     generateNeighbors(tree, neighbors);
+}
+
+TreeNeighborGeneratorRandomTBR::TreeNeighborGeneratorRandomTBR(TreeCache* tc) : TreeNeighborGenerator(tc) {
+
 }
 
 void TreeNeighborGeneratorRandomTBR::generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable* rng) {

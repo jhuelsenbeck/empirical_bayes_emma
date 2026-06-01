@@ -46,6 +46,7 @@ class CompactTree : public BitSet {
             };
 
                                 CompactTree(void) = default;
+                                CompactTree(const CompactTree& ct);
         explicit                CompactTree(size_t n) : BitSet(n) {}
 
                                 // Encode a Tree (assumed rooted on tip 0). Does NOT take ownership of t.

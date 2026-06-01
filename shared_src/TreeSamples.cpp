@@ -231,20 +231,24 @@ void TreeSamples::print(void) {
     });
 
     // print sorted results
-    double sum = 0.0;
+    double sumExact = 0.0, sumMcmc = 0.0;;
     int i = 0;
     for (const auto &e : entries)
         {
-        TreeCacheMap::iterator it = treeCache->find(e.first);
-        if (it == treeCache->end())
+        TreeInfo* tInfo = treeCache->getTreeInfo(e.first);
+        if (tInfo == nullptr)
             Msg::error("Could not find tree in cache");
-        double lnL = it->second->lnLikelihood;
+        double lnL = tInfo->lnLikelihood;
         double prob = (double)e.second / numSamples;
-        sum += prob;
+        sumMcmc += prob;
+        sumExact += tInfo->posteriorProbability;
         std::cout << std::setw(5) << ++i << " -- ";
         std::cout << std::fixed << std::setprecision(4);
-        std::cout << std::setw(21) << e.first << " " << lnL << " " << prob << " " << sum << '\n';
-        if (sum > 0.99)
+        std::cout << std::setw(21) << e.first << " " << lnL << " " << " " << tInfo->posteriorProbability << " ";
+        std::cout << prob << " " << sumMcmc <<  " -- ";
+        std::cout << "(" << tInfo->firstHit << ", " << tInfo->residenceCount << ", " << tInfo->numRevisits << ")";
+        std::cout << std::endl;
+        if (sumExact > 0.99 && sumMcmc > 0.99)
             break;
         }
 }
@@ -372,8 +376,7 @@ void TreeSamples::writeStatsLine(std::ostream& os, std::vector<TreeSamples*>& sa
     for (size_t c=0; c<numChains; c++)
         {
         TreeCountMap::iterator it = sampleVec[c]->treeCounts.find(mapHash);
-        double p = (it != sampleVec[c]->treeCounts.end())
-                   ? (double)it->second / sampleVec[c]->numSamples : 0.0;
+        double p = (it != sampleVec[c]->treeCounts.end()) ? (double)it->second / sampleVec[c]->numSamples : 0.0;
         os << '\t' << p;
         }
 

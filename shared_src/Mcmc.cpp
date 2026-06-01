@@ -3,19 +3,22 @@
 #include "LikelihoodCalculator.hpp"
 #include "Mcmc.hpp"
 #include "Msg.hpp"
+#include "Peak.hpp"
 #include "RandomVariable.hpp"
 #include "Tree.hpp"
 #include "TreeCache.hpp"
+#include "TreeConvergenceDiagnostics.hpp"
 #include "TreeLikelihoods.hpp"
 #include "TreeNeighbors.hpp"
 #include "TreePartitions.hpp"
 #include "TreeSamples.hpp"
+#include "TreeSpace.hpp"
 #include "UserSettings.hpp"
 
 
 
-Mcmc::Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a) : 
-    rng(r), threadPool(p), alignment(a), treeCache(tc), treeLikelihoods(tl), treeNeighbors(tn) {
+Mcmc::Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a, bool tf, std::string cfn) : 
+    rng(r), threadPool(p), alignment(a), treeCache(tc), treeLikelihoods(tl), treeNeighbors(tn), expandedOutput(tf), convergenceLogFileName(cfn) {
 
     UserSettings& settings = UserSettings::userSettings();
     numChains       = settings.getNumChains();
@@ -222,7 +225,8 @@ void Mcmc::normalize(double power, std::vector<TreeInfo*>& neighbors, std::vecto
 void Mcmc::openConvergenceLog(void) {
 
     UserSettings& settings = UserSettings::userSettings();
-    std::string path = settings.getOutputFileName() + ".convergence.tsv";
+    std::string path = settings.getOutputFileName() + convergenceLogFileName + ".tsv";
+
     convergenceLog.open(path, std::ios::out | std::ios::trunc);
     if (convergenceLog.is_open() == false)
         {
@@ -230,15 +234,16 @@ void Mcmc::openConvergenceLog(void) {
         return;
         }
 
-    // 6 sig figs is enough for split frequencies and ESS;
-    // setting it once here means the per-line writers can stay terse
     convergenceLog << std::fixed << std::setprecision(6);
 
     convergenceLog << "cycle\t";
     TreePartitions::writeStatsHeader(convergenceLog);
     convergenceLog << '\t';
     TreeSamples::writeStatsHeader(convergenceLog, (size_t)numChains);
+    convergenceLog << '\t';
+    TreeConvergenceDiagnostics::writeStatsHeader(convergenceLog, (size_t)numChains);
     convergenceLog << '\n';
+
     convergenceLog.flush();
 }
 
@@ -280,25 +285,31 @@ void Mcmc::printToScreen(int n, double curLnL, double newLnL) {
         std::cout << "   * " << std::setw(6) << n << " -- ";
         std::cout << std::fixed << std::setprecision(2); 
         std::cout << curLnL << " -> " << newLnL << " " << std::setw(8) << newLnL-curLnL << " ";
-        std::cout << "(" << treeCache->size() << " " << std::setprecision(1) << (double)cacheSize(treeCache)/1000000.0 << "MB) ";
+        std::cout << "(" << treeCache->size() << " " << std::setprecision(1) << (double)treeCache->cacheSize()/1000000.0 << "MB) ";
         std::cout << std::endl;
         }
 }
 
 void Mcmc::printToScreen(int n, std::vector<double>& curLnL) {
 
+    if (expandedOutput == false)
+        return;
+        
     if (n % printFrequency == 0 || n == 1)
         {
         std::cout << "   * " << std::setw(6) << n << " -- ";
         std::cout << std::fixed << std::setprecision(2); 
         for (size_t i=0; i<curLnL.size(); i++)
             std::cout << curLnL[i] << " ";
-        std::cout << "(" << treeCache->size() << " " << std::setprecision(1) << (double)cacheSize(treeCache)/1000000.0 << "MB) ";
+        std::cout << "(" << treeCache->size() << " " << std::setprecision(1) << (double)treeCache->cacheSize()/1000000.0 << "MB) ";
         std::cout << std::endl;
         }
 }
 
 void Mcmc::printToScreen(int n, std::vector<std::vector<double>>& curLnL, std::vector<std::vector<int>>& indices) {
+
+    if (expandedOutput == false)
+        return;
 
     if (n % printFrequency == 0 || n == 1)
         {
@@ -308,8 +319,31 @@ void Mcmc::printToScreen(int n, std::vector<std::vector<double>>& curLnL, std::v
             {
             std::cout << curLnL[i][coldChainIndex(indices[i])] << " ";
             }
-        std::cout << "(" << treeCache->size() << " " << std::setprecision(1) << (double)cacheSize(treeCache)/1000000.0 << "MB) ";
+        std::cout << "(" << treeCache->size() << " " << std::setprecision(1) << (double)treeCache->cacheSize()/1000000.0 << "MB) ";
         std::cout << std::endl;
+        }
+}
+
+void Mcmc::recordState(int n, bool accept, uint64_t currentTreeHash, uint64_t newTreeHash) {
+
+    if (accept == true)
+        {
+        TreeInfo* tInfo = treeCache->getTreeInfo(newTreeHash);
+        if (currentTreeHash != newTreeHash)
+            {
+            if (tInfo->hasBeenVisited == false)
+                {
+                tInfo->firstHit = n;
+                tInfo->hasBeenVisited = true;
+                }
+            tInfo->numRevisits++;
+            }
+        tInfo->residenceCount++;
+        }
+    else
+        {
+        TreeInfo* tInfo = treeCache->getTreeInfo(currentTreeHash);
+        tInfo->residenceCount++;
         }
 }
 
@@ -320,13 +354,17 @@ void Mcmc::returnCalculator(LikelihoodCalculator* calculator) {
 
 void Mcmc::run(double power) {
         
-    std::cout << "   MCMC:" << std::endl;
+    if (expandedOutput == true)
+        std::cout << "   MCMC:" << std::endl;
+    else 
+        std::cout << "   Running MCMC for " << numCycles << " generations" << std::endl;
     
     openTreeFile();
 
     // initialize chain
     Tree* currentTree = new Tree(rng, alignment->getTaxonNames());
     double curLnL = calculateMaximumLikelihood(currentTree);
+    recordState(1, true, currentTree->getHash()-1, currentTree->getHash());
     
     // run chain
     std::vector<double> forwardProbabilities, reverseProbabilities;
@@ -366,6 +404,7 @@ void Mcmc::run(double power) {
             accept = true;
 
         printToScreen(n, curLnL, newLnL);
+        recordState(n, accept, currentTree->getHash(), newTree->getHash());
 
         if (accept == true)
             {
@@ -380,7 +419,7 @@ void Mcmc::run(double power) {
         if (n % sampleFrequency == 0 || n == 1)
             printTreeToFile(n, currentTree);
         }
-            
+                    
     samples[0]->print();
     partitions[0]->print();
     
@@ -391,10 +430,19 @@ void Mcmc::run(double power) {
 
 void Mcmc::run(double power, int numRuns) {
 
-    std::cout << "   MCMC:" << std::endl;
-    std::cout << "   * Number of runs = " << numRuns << std::endl;
+    if (numRuns < 2)
+        Msg::error("Expecting at least two runs for this chain");
+        
+    if (expandedOutput == true)
+        {
+        std::cout << "   MCMC:" << std::endl;
+        std::cout << "   * Number of runs = " << numRuns << std::endl;
+        }
+    else 
+        std::cout << "   Running " << numRuns << " MCMC chains for " << numCycles << " generations each" << std::endl;
     
     openTreeFile();
+    openConvergenceLog();
 
     // initialize chain
     std::vector<Tree*> currentTree(numRuns);
@@ -451,6 +499,9 @@ void Mcmc::run(double power, int numRuns) {
             if (log(rng->uniformRv()) < lnR)
                 accept = true;
 
+            if (run == 0)
+                recordState(n, accept, currentTree[run]->getHash(), newTree->getHash());
+
             if (accept == true)
                 {
                 curLnL[run] = newLnL;
@@ -466,7 +517,7 @@ void Mcmc::run(double power, int numRuns) {
 
             if (n == nextLogPoint)
                 {
-                TreePartitions::comparePartitions(partitions);
+                TreePartitions::comparePartitions(partitions, false);
                 writeConvergenceLine(n);
                 nextLogPoint = (nextLogPoint < 100000) ? nextLogPoint * 10 : nextLogPoint + 100000;
                 }
@@ -476,7 +527,7 @@ void Mcmc::run(double power, int numRuns) {
             
     TreeSamples::compbinedPrint(samples);
     TreeSamples::compareSamples(samples);
-    TreePartitions::comparePartitions(partitions);
+    TreePartitions::comparePartitions(partitions, true);
     
     for (int run=0; run<numRuns; run++)
         delete currentTree[run];
@@ -486,10 +537,15 @@ void Mcmc::run(double power, int numRuns) {
 
 void Mcmc::run(double power, int numRuns, int numChains) {
 
-    std::cout << "   MCMC:" << std::endl;
-    std::cout << "   * Number of runs = " << numRuns << std::endl;
-    std::cout << "   * Number of chains = " << numChains << std::endl;
-    std::cout << "   * Temperature = " << temperature << std::endl;
+    if (expandedOutput == true)
+        {
+        std::cout << "   MCMC:" << std::endl;
+        std::cout << "   * Number of runs = " << numRuns << std::endl;
+        std::cout << "   * Number of chains = " << numChains << std::endl;
+        std::cout << "   * Temperature = " << temperature << std::endl;
+        }
+    else 
+        std::cout << "   Running " << numRuns << " MCMCMC chains (one cold and " << numChains-1 << "heated) for " << numCycles << " generations each" << std::endl;
     
     openTreeFile();
 
@@ -566,6 +622,9 @@ void Mcmc::run(double power, int numRuns, int numChains) {
                 if (log(rng->uniformRv()) < lnR)
                     accept = true;
 
+                if (run == coldChainIndex(chainIndex[run]))
+                    recordState(n, accept, currentTree[run][chain]->getHash(), newTree->getHash());
+
                 if (accept == true)
                     {
                     curLnL[run][chain] = newLnL;
@@ -588,14 +647,12 @@ void Mcmc::run(double power, int numRuns, int numChains) {
                 chainIndex[run][idx.second] = idx0;
                 }
 
-            for (size_t i=0; i<numRuns; i++)
-                {
-                samples[i]->sampleTree(currentTree[run][coldChainIndex(chainIndex[i])]->getHash());
-                partitions[i]->addTree(currentTree[run][coldChainIndex(chainIndex[i])]);
-                }
+            int coldIdx = coldChainIndex(chainIndex[run]);
+            samples[run]->sampleTree(currentTree[run][coldIdx]->getHash());
+            partitions[run]->addTree(currentTree[run][coldIdx]);
             if (n == nextLogPoint)
                 {
-                TreePartitions::comparePartitions(partitions);
+                TreePartitions::comparePartitions(partitions, false);
                 writeConvergenceLine(n);
                 nextLogPoint = (nextLogPoint < 100000) ? nextLogPoint * 10 : nextLogPoint + 100000;
                 }
@@ -606,7 +663,7 @@ void Mcmc::run(double power, int numRuns, int numChains) {
             
     TreeSamples::compbinedPrint(samples);
     TreeSamples::compareSamples(samples);
-    TreePartitions::comparePartitions(partitions);
+    TreePartitions::comparePartitions(partitions, true);
     
     for (int run=0; run<numRuns; run++)
         for (int chain=0; chain<numChains; chain++)
@@ -615,18 +672,109 @@ void Mcmc::run(double power, int numRuns, int numChains) {
     std::cout << std::endl;
 }
 
+void Mcmc::welfordSummary(TreeSpace* ts, TreeCache* tc, double n) {
+
+    std::vector<TreeInfo*> trees;
+    trees.reserve(tc->size());
+    TreeCacheMap& tcCache = tc->getCache();
+    for (const auto& kv : tcCache)
+        {
+        if (kv.second != nullptr)
+            trees.push_back(kv.second);
+        }
+
+    std::sort(trees.begin(),
+              trees.end(),
+              [](const TreeInfo* a, const TreeInfo* b)
+                  {
+                  return a->posteriorProbability > b->posteriorProbability;
+                  });
+
+    std::cout << std::fixed << std::setprecision(2);
+    int i = 0;
+    double sum = 0.0;
+    for (const TreeInfo* info : trees)
+        {
+        Peak* peak = ts->findPeakForTreeWithHash(info->hash);
+        if (peak == nullptr)
+            Msg::error("Could not find peak");
+        int peakId = peak->getPeakId();
+        double peakProb = peak->getPeakProbability();
+        
+        sum += info->posteriorProbability;
+        std::cout << ++i << " -- " << std::setw(20) << info->hash << " " << peakId << " " << peakProb << " -- ";
+        std::cout << info->lnLikelihood << " " << info->posteriorProbability << " " << sum << " -- ";
+        
+        double mean = info->meanResidenceCount;
+        double var = info->m2ResidenceCount / (n-1);
+        double sem = std::sqrt(var/n);
+        std::cout << mean << " (" << sem << ") ";
+        
+        mean = info->meanFirstHit;
+        var = info->m2FirstHit / (n-1);
+        sem = std::sqrt(var/n);
+        std::cout << mean << " (" << sem << ") ";
+
+        mean = info->meanNumRevisits;
+        var = info->m2NumRevisits / (n-1);
+        sem = std::sqrt(var/n);
+        std::cout << mean << " (" << sem << ") ";
+
+        std::cout << std::endl;
+                  
+        if (sum > 0.99)
+            break;
+        }
+}
+
+void Mcmc::welfordUpdate(double n) {
+
+    TreeCacheMap& tCache = treeCache->getCache();
+    for (auto& [key,val] : tCache)
+        {
+        TreeInfo* info = val;
+        
+        double x = (double)val->firstHit;
+        double delta = x - info->meanFirstHit;
+        info->meanFirstHit += delta / n;
+        double delta2 = x - info->meanFirstHit;
+        info->m2FirstHit += delta * delta2;
+        
+        x = (double)val->numRevisits;
+        delta = x - info->meanNumRevisits;
+        info->meanNumRevisits += delta / n;
+        delta2 = x - info->meanNumRevisits;
+        info->m2NumRevisits += delta * delta2;
+
+        x = (double)val->residenceCount;
+        delta = x - info->meanResidenceCount;
+        info->meanResidenceCount += delta / n;
+        delta2 = x - info->meanResidenceCount;
+        info->m2ResidenceCount += delta * delta2;
+        
+        info->firstHit = std::numeric_limits<unsigned>::max();
+        info->numRevisits = 0;
+        info->residenceCount = 0;
+        info->hasBeenVisited = false;
+        }
+}
+
 void Mcmc::writeConvergenceLine(int cycle) {
 
     if (convergenceLog.is_open() == false)
         return;
 
     convergenceLog << cycle << '\t';
+
     TreePartitions::writeStatsLine(convergenceLog, partitions);
     convergenceLog << '\t';
-    TreeSamples::writeStatsLine(convergenceLog, samples);
-    convergenceLog << '\n';
 
-    // flush every line so the user can `tail -f` during long runs;
-    // the cost is negligible at log-spaced trigger frequencies
+    TreeSamples::writeStatsLine(convergenceLog, samples);
+    convergenceLog << '\t';
+
+    TreeConvergenceDiagnostics diagnostics(treeCache);
+    diagnostics.writeStatsLine(convergenceLog, samples);
+
+    convergenceLog << '\n';
     convergenceLog.flush();
 }

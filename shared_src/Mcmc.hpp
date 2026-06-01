@@ -13,6 +13,7 @@ class TreeLikelihoods;
 class TreeNeighbors;
 class TreePartitions;
 class TreeSamples;
+class TreeSpace;
 typedef std::vector<LikelihoodCalculator*> CalculatorVector;
 
 
@@ -21,12 +22,14 @@ class Mcmc {
 
     public:
                                         Mcmc(void) = delete;
-                                        Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a);
+                                        Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a, bool tf, std::string convergenceFileName);
                                        ~Mcmc(void);
         std::vector<TreeSamples*>&      getSamples(void) { return samples; }
         void                            run(double power);
         void                            run(double power, int numRuns);
         void                            run(double power, int numRuns, int numChains);
+        void                            welfordUpdate(double n);
+        static void                     welfordSummary(TreeSpace* ts, TreeCache* tc, double n);
     
     private:
         double                          calculateMaximumLikelihood(Tree* currentTree);
@@ -43,10 +46,12 @@ class Mcmc {
         void                            printToScreen(int n, double curLnL, double newLnL);
         void                            printToScreen(int n, std::vector<double>& curLnL);
         void                            printToScreen(int n, std::vector<std::vector<double>>& curLnL, std::vector<std::vector<int>>& indices);
+        void                            recordState(int n, bool accept, uint64_t currentTreeHash, uint64_t newTreeHash);
         void                            returnCalculator(LikelihoodCalculator* calculator);
         void                            openConvergenceLog(void);
         void                            openTreeFile(void);
         void                            writeConvergenceLine(int cycle);
+        std::string                     convergenceLogFileName;
         std::ofstream                   convergenceLog;
         std::ofstream                   treeStrm;
         RandomVariable*                 rng;
@@ -65,6 +70,7 @@ class Mcmc {
         CalculatorVector                activeCalculators;
         CalculatorVector                calculatorPool;
         CalculatorVector                allocatedCalculators;
+        bool                            expandedOutput;
 };
 
 #endif

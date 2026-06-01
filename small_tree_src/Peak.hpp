@@ -16,17 +16,16 @@ class Peak {
         int         getPeakId(void) { return peakId; }
         double      getPeakProbability(void) { return peakProbability; }
         double      getPeakTreeProbability(void) { return peakTreeProbability; }
-        double      getPeakTreeLnProbability(void) { return lnPeakTreeProbability; }
         uint64_t    getPeakTreeHash(void) { return peakTreeHash; }
+        TreeSet&    getTrees(void) { return memberTrees; }
         void        setPeakId(int x) { peakId = x; }
         bool        isTreeInPeak(uint64_t treeHash);
         void        setPeakTreeHash(uint64_t x) { peakTreeHash = x; }
-        void        setPeakTreeProbability(double x) { peakTreeProbability = x; lnPeakTreeProbability = std::log(x); }
+        void        setPeakTreeProbability(double x) { peakTreeProbability = x; }
     
     private:
         uint64_t    peakTreeHash;
         double      peakTreeProbability;
-        double      lnPeakTreeProbability;
         double      peakProbability;
         int         numTrees;
         int         peakId;

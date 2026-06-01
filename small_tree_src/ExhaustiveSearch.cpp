@@ -235,7 +235,7 @@ void ExhaustiveSearch::enumerateAllTrees(void) {
     // enumerate all of the trees, adding each to the TreeList object
     search([this](Node* root, int treeNum) {
         Tree* t = new Tree(root, taxonNames);
-        TreeInfo* tInfo = getOrCreateTreeInfo(treeCache, t);
+        TreeInfo* tInfo = treeCache->getOrCreateTreeInfo(t);
         if (tInfo->tree != nullptr)
             Msg::error("Not expecting to find existing tree during exhaustive search");
         tInfo->tree = t;
@@ -268,7 +268,8 @@ void ExhaustiveSearch::enumerateAllTrees(void) {
     
     size_t cnt = 0, treeCnt = 0;
     bestLnL = 1.0;
-    for (auto& [key,val] : *treeCache)
+    TreeCacheMap& tCache = treeCache->getCache();
+    for (auto& [key,val] : tCache)
         {
         calculators[cnt].setTree(val->tree);
         calculators[cnt].setTreeInfo(val);

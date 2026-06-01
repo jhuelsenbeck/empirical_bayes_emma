@@ -3,8 +3,7 @@
 
 
 Peak::Peak(void) : 
-    peakTreeHash(0), peakTreeProbability(0.0), lnPeakTreeProbability(0.0), 
-    peakProbability(0.0), numTrees(0), peakId(0) {
+    peakTreeHash(0), peakTreeProbability(0.0), peakProbability(0.0), numTrees(0), peakId(0) {
 
 }
 

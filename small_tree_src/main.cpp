@@ -30,44 +30,74 @@ int main(int argc, char* argv[]) {
     UserSettings::userSettings().print();
     
     // read the alignment file
+    int numTaxa = 8;
     Alignment* originalAlignment = new Alignment(UserSettings::userSettings().getInputFileName());
     Alignment* data = originalAlignment;
-    if (originalAlignment->getNumTaxa() > 10)
-        data = new Alignment(*originalAlignment, 10, &rng);
+    if (originalAlignment->getNumTaxa() > numTaxa)
+        data = new Alignment(*originalAlignment, numTaxa, &rng);
     data->print(UserSettings::userSettings().getOutputFileName() + ".nex");
     data->summarize();
     data->compress();
     BitSetFactory::getFactory().initialize(data->getNumTaxa());
 
     // calculate likelihoods of all trees
-    TreeCache treeCache;
-    TreeLikelihoods treeLikelihoods(&treeCache);
-    ExhaustiveSearch exhaustive(data, &treeCache, &threads);
+    TreeCache treeCacheNni;
+    TreeLikelihoods treeLikelihoods(&treeCacheNni);
+    ExhaustiveSearch exhaustive(data, &treeCacheNni, &threads);
 
-    // generate the neighbors for each tree
-    TreeNeighborGeneratorNNI treeNeighborGenerator(&treeCache);
-    TreeNeighbors treeNeighbors(&treeCache, &treeNeighborGenerator, data->getNumTaxa());
-    for (auto& [key,val] : treeCache)
-        treeNeighbors.neighbors(val->tree);
+    // generate the NNI neighbors for each tree
+    std::cout << "   Generating NNI neighbors for all " << treeCacheNni.size() << " trees" << std::endl;
+    TreeNeighborGeneratorNNI treeNeighborGeneratorNni(&treeCacheNni);
+    TreeNeighbors treeNeighborsNni(&treeCacheNni, &treeNeighborGeneratorNni, data->getNumTaxa());
+    TreeCacheMap& nniCache = treeCacheNni.getCache();
+    for (auto& [key,val] : nniCache)
+        treeNeighborsNni.neighbors(val->tree);
+        
+    // generate the TBR neighbors for each tree
+    TreeCache treeCacheTbr;
+    treeCacheTbr.injectTreesAndLikelihoods(&treeCacheNni);
+    std::cout << "   Generating TBR neighbors for all " << treeCacheTbr.size() << " trees" << std::endl;
+    TreeNeighborGeneratorTBR treeNeighborGeneratorTbr(&treeCacheTbr);
+    TreeNeighbors treeNeighborsTbr(&treeCacheTbr, &treeNeighborGeneratorTbr, data->getNumTaxa());
+    TreeCacheMap& tbrCache = treeCacheTbr.getCache();
+    for (auto& [key,val] : tbrCache)
+        treeNeighborsTbr.neighbors(val->tree);
     
-    // determine the tree landscape
-    TreeSpace treeSpace(&treeCache);
-    treeSpace.characterize();
-    treeSpace.printPosterior();
-    treeSpace.printPosterior(UserSettings::userSettings().getOutputFileName() + ".true");
+    // determine the tree landscapes for NNI and TBR
+    TreeSpace treeSpaceNni(&treeCacheNni);
+    treeSpaceNni.characterize();
+    treeSpaceNni.printPosterior();
+    treeSpaceNni.printPosterior(UserSettings::userSettings().getOutputFileName() + ".true");
+    TreeSpace treeSpaceTbr(&treeCacheTbr);
+    treeSpaceTbr.characterize();
         
     // Markov chain Monte Carlo exploration of tree space
-//    Mcmc mcmc(&rng, &threads, &treeCache, &treeLikelihoods, &treeNeighbors, &alignment);
-//    mcmc.run(0.1);
-//    treeSpace.printPosterior(mcmc.getSamples()[0]);
-//    mcmc.run(0.0);
-//    treeSpace.printPosterior(mcmc.getSamples()[0]);
+    std::vector<double> powers = { 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.0 };
+    std::vector<TreeCache*> treeCache = { &treeCacheNni, &treeCacheTbr };
+    std::vector<TreeSpace*> treeSpace = { &treeSpaceNni, &treeSpaceTbr };
+    std::vector<TreeNeighbors*> treeNeighbors = { &treeNeighborsNni, &treeNeighborsTbr };
+    std::vector<std::string> swapName = { "nni", "tbr" };
+    for (int swapType=0; swapType<2; swapType++)
+        {
+        int nReps = 5;
+        for (double power : powers)
+            {
+            std::cout << "Analysis: " << swapType << " " << power << std::endl;
+            std::string convergenceFileName = "conv_" + swapName[swapType] + "_" + std::to_string(power);
+            Mcmc mcmc(&rng, &threads, treeCache[swapType], &treeLikelihoods, treeNeighbors[swapType], data, true, convergenceFileName);
+            mcmc.run(power, nReps);
+            mcmc.welfordUpdate(nReps);
+            Mcmc::welfordSummary(treeSpace[swapType], treeCache[swapType], nReps);
+            treeCacheNni.cleanCacheStatistics();
+            }
+        }
     
     // clean up
-    if (originalAlignment->getNumTaxa() > 10)
+    if (originalAlignment->getNumTaxa() > numTaxa)
         delete data;
     delete originalAlignment;
-    freeTreeCache(&treeCache);
+    treeCacheNni.freeTreeCache();
+    treeCacheTbr.freeTreeCache();
     
     return EXIT_SUCCESS;
 }
@@ -82,5 +112,4 @@ void printHeader(void) {
     std::cout << "   * Bruce Rannala (University of California, Davis)" << std::endl;
     std::cout << "   * Levi Yoder Raskin (University of California, Berkeley)" << std::endl;
     std::cout << std::endl;
-
 }

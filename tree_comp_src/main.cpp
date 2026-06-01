@@ -1,16 +1,20 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 #include "BitSetFactory.hpp"
 #include "Msg.hpp"
-#include "Tree.hpp"
 #include "ncl.h"
+#include "Tree.hpp"
+#include "UserSettings.hpp"
 
 void addTreesToMap(std::unordered_map<uint64_t, std::pair<int,int>>& treeMap, std::vector<Tree*>& trees1, std::vector<Tree*>& trees2);
+void printTreeProbabilities(std::map<uint64_t,std::pair<double,int>>& probs);
 void printTreeProbabilities(std::unordered_map<uint64_t, std::pair<int,int>>& treeMap, int n1, int n2);
+std::map<uint64_t,std::pair<double,int>> readTreeProbabilities(const std::string& filename);
 std::vector<Tree*> readTrees(const std::string& filename, double burnFraction, int& nt);
 
 
@@ -18,23 +22,61 @@ std::vector<Tree*> readTrees(const std::string& filename, double burnFraction, i
 int main(int argc, char* argv[]) {
 
     // get the user settings
-    std::string fileName1 = "/Users/johnh/Desktop/empirical_bayes_data/test.nex.t";
-    std::string fileName2 = "/Users/johnh/Desktop/empirical_bayes_data/test.nex.tre";
-    double burnFraction = 0.20;
+    UserSettings& settings = UserSettings::userSettings();
+    settings.readSettings(argc, argv);
+    settings.print();
         
     // read the trees from the two files
-    int nTaxa1 = 0, nTaxa2 = 0;
-    std::vector<Tree*> trees1 = readTrees(fileName1, burnFraction, nTaxa1);
-    std::vector<Tree*> trees2 = readTrees(fileName2, burnFraction, nTaxa2);
-    if (nTaxa1 != nTaxa2)
-        Msg::error("Mismatched tree sizes");
+    std::vector<std::string>& treeFiles = settings.getTreeFiles();
+    std::string trueFile = settings.getTrueFile();
+    double burnFraction = settings.getBurnin();
+    
+    if (treeFiles.size() == 2 && trueFile == "")
+        {
+        int nTaxa1 = 0, nTaxa2 = 0;
+        std::vector<Tree*> trees1 = readTrees(treeFiles[0], burnFraction, nTaxa1);
+        std::vector<Tree*> trees2 = readTrees(treeFiles[1], burnFraction, nTaxa2);
+        if (nTaxa1 != nTaxa2)
+            Msg::error("Mismatched tree sizes");
 
-    // add the trees to the map
-    std::unordered_map<uint64_t, std::pair<int,int>> treeMap;
-    addTreesToMap(treeMap, trees1, trees2);
+        // add the trees to the map
+        std::unordered_map<uint64_t, std::pair<int,int>> treeMap;
+        addTreesToMap(treeMap, trees1, trees2);
+            
+        // print values
+        printTreeProbabilities(treeMap, (int)trees1.size(), (int)trees2.size());
+        }
+    else if (treeFiles.size() == 1 && trueFile != "")
+        {
+        int nTaxa = 0;
+        std::vector<Tree*> trees = readTrees(treeFiles[0], burnFraction, nTaxa);
+        std::map<uint64_t,std::pair<double,int>> probs = readTreeProbabilities(trueFile);
         
-    // print values
-    printTreeProbabilities(treeMap, (int)trees1.size(), (int)trees2.size());
+        int n = 0;
+        int start = trees.size() * burnFraction;
+        if (trees.size() - start < 100)
+            Msg::error("Too few sampled trees");
+        for (size_t i=start; i<trees.size(); i++)
+            {
+            uint64_t key = trees[i]->getHash();
+            std::map<uint64_t,std::pair<double,int>>::iterator it = probs.find(key);
+            if (it == probs.end())
+                {
+                std::pair<double,int> val = std::make_pair(0.0, 1);
+                probs.insert( std::make_pair(key,val) );
+                }
+            else 
+                {
+                it->second.second++;
+                }
+            n++;
+            }
+            
+        // print to a file
+        printTreeProbabilities(probs);
+        }
+    else 
+        Msg::error("Not clear which tree sets to compare");
         
     return EXIT_SUCCESS;
 }
@@ -67,6 +109,37 @@ void addTreesToMap(std::unordered_map<uint64_t, std::pair<int,int>>& treeMap, st
         }
 }
 
+void printTreeProbabilities(std::map<uint64_t,std::pair<double,int>>& probs) {
+
+    UserSettings& settings = UserSettings::userSettings();
+    std::string dataname = settings.getTrueFile();
+    std::string filename = settings.getOutputFileName();
+    bool appendResults = settings.getShouldAppend();
+
+    std::ios_base::openmode mode = appendResults ? std::ios::app : std::ios::trunc;
+    std::ofstream outStrm(filename, mode);
+    
+    if (appendResults == false)
+        outStrm << "dataset" << '\t' << "point_index" << '\t' << "x" << '\t' << "y" << '\n';
+    
+    int n = 0;
+    for (auto& [key,val] : probs)
+        n += val.second;
+        
+    int i = 0;
+    for (auto& [key,val] : probs)
+        {
+        double x = (double)val.second / n;
+        if (val.first + x > 0.001)
+            {
+            std::cout << std::setw(20) << key << " -- " << val.first << " " << x << std::endl;
+            outStrm << dataname << '\t' << ++i << '\t' << val.first << '\t' << x << '\n';
+            }
+        }
+        
+    outStrm.close();
+}
+
 void printTreeProbabilities(std::unordered_map<uint64_t, std::pair<int,int>>& treeMap, int n1, int n2) {
 
     std::vector<std::pair<uint64_t, std::pair<int,int>>> sortedEntries(treeMap.begin(), treeMap.end());
@@ -82,6 +155,53 @@ void printTreeProbabilities(std::unordered_map<uint64_t, std::pair<int,int>>& tr
         std::cout << std::fixed << std::setprecision(4) << (double)val.second / n2 << " ";
         std::cout << std::endl;
         }
+}
+
+std::map<uint64_t,std::pair<double,int>> readTreeProbabilities(const std::string& filename) {
+
+    std::map<uint64_t,std::pair<double,int>> probsMap;
+
+    std::ifstream strm(filename);
+    if (!strm.good())
+        Msg::error("Cannot open file: " + filename);
+
+    std::string lineString = "";
+    std::string theSequence = "";
+    uint64_t treeHash = 0;
+    double treeProb = 0.0;
+    while( getline(strm, lineString).good() )
+        {
+        std::istringstream linestream(lineString);
+        int ch;
+        std::string word = "";
+        int wordNum = 0;
+        treeHash = 0;
+        treeProb = 0.0;
+        std::string cmdString = "";
+        do
+            {
+            word = "";
+            linestream >> word;
+            wordNum++;
+            if (wordNum == 1)
+                treeHash = static_cast<uint64_t>(std::stoull(word));
+            else if (wordNum == 3)
+                treeProb = std::stod(word);
+            //std::cout << wordNum << " " << word << std::endl;
+            } while ( (ch=linestream.get()) != EOF );
+        //std::cout << treeHash << " -> " << treeProb << std::endl;
+        std::pair val = std::make_pair(treeProb,0);
+        probsMap.insert( std::make_pair(treeHash, val) );
+        }
+    
+    strm.close();
+    
+#   if 0
+    for (auto& [key,val] : probsMap)
+        std::cout << key << " " << val.first << " " << val.second << std::endl;
+#   endif
+    
+    return probsMap;
 }
 
 std::vector<Tree*> readTrees(const std::string& filename, double burnFraction, int& nt) {

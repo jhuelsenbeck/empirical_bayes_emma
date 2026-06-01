@@ -40,7 +40,7 @@ class TreeSpace {
                                ~TreeSpace(void);
         void                    characterize(void);
         Peak*                   findPeak(uint64_t treeHash);
-        int                     findPeakIdForTreeWithHash(uint64_t treeHash);
+        Peak*                   findPeakForTreeWithHash(uint64_t treeHash);
         Peak*                   findPeakWithId(int id);
         TreeSpaceNode*          getTree(uint64_t treeHash);
         double                  getTreeProbabiity(uint64_t treeHash);

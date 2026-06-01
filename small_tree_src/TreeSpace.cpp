@@ -17,7 +17,8 @@
 TreeSpace::TreeSpace(TreeCache* tc) : treeCache(tc) {
         
     // construct graph
-    for (auto& [key,val] : *treeCache)
+    TreeCacheMap& tCache = treeCache->getCache();
+    for (auto& [key,val] : tCache)
         {
         TreeSpaceNode* thisTree = getTree(key);
         std::vector<TreeInfo*>& ndeNeighbors = val->neighbors;
@@ -28,10 +29,12 @@ TreeSpace::TreeSpace(TreeCache* tc) : treeCache(tc) {
             thisTree->neighbors.insert(neighboringTree);
             }
         }
+        
+    std::cout << "   * Number of vertices in tree space graph: " << treeNodes.size() << std::endl;
        
     // calculate the exact posterior probability
     double bestLnL = std::numeric_limits<double>::lowest();
-    for (auto& [key,val] : *treeCache)
+    for (auto& [key,val] : tCache)
         {
         if (val->lnLikelihood > bestLnL)
             bestLnL = val->lnLikelihood;
@@ -40,13 +43,20 @@ TreeSpace::TreeSpace(TreeCache* tc) : treeCache(tc) {
     double sum = 0.0;
     for (auto& [key,val] : treeProbabilities)
         {
-        double x = std::exp(val-bestLnL);
+        double x = std::exp(val - bestLnL);
         val = x;
         sum += x;
         }
     double factor = 1.0 / sum;
     for (auto& [key,val] : treeProbabilities)
+        {
         val *= factor;    
+        
+        TreeInfo* tInfo = treeCache->getTreeInfo(key);
+        if (tInfo == nullptr)
+            Msg::error("Could not find tree in tree cache");
+        tInfo->posteriorProbability = val;
+        }
 }
 
 TreeSpace::~TreeSpace(void) {
@@ -108,6 +118,20 @@ void TreeSpace::characterize(void) {
             peak->addTreeToPeak(key, treeProb);
             }
         }
+        
+    // check that the peaks contain all of the trees in the graph
+    int n = 0;
+    for (auto& [key,val] : peaks)
+        {
+        TreeSet& treesInSet = val->getTrees();
+        n += treesInSet.size();
+        }
+    if (n != treeNodes.size())
+        {
+        std::cout << "treeNodes.size() = " << treeNodes.size() << std::endl;
+        std::cout << "Sum member trees = " << n << std::endl;
+        Msg::error("Mismatch between peak member tree size and number of tree space vertices");
+        }
 
     // label the peaks in order from highest to lowest
     std::vector<std::pair<uint64_t, Peak*>> vec(peaks.begin(), peaks.end());
@@ -143,7 +167,7 @@ void TreeSpace::characterize(void) {
     for (const auto& [key, peak] : vec) 
         {
         std::cout << peak->getPeakId() << ": " << std::setw(20) << key << " " 
-                  << peak->getPeakTreeLnProbability() << " " << peak->getNumTrees() << " " << " " << peak->getPeakProbability() << "\n";
+                  << " " << peak->getNumTrees() << " " << " " << peak->getPeakProbability() << "\n";
         }
     std::cout << "Largest basin fraction   = " << bMax << std::endl;
     std::cout << "Peak mass entropy        = " << peakMassEntropy << std::endl;
@@ -421,14 +445,14 @@ Peak* TreeSpace::findPeak(uint64_t treeHash) {
     return nullptr;
 }
 
-int TreeSpace::findPeakIdForTreeWithHash(uint64_t treeHash) {
+Peak* TreeSpace::findPeakForTreeWithHash(uint64_t treeHash) {
 
     for (auto& [key,val] : peaks)
         {
         if (val->isTreeInPeak(treeHash) == true)
-            return val->getPeakId();
+            return val;
         }
-    return -1;
+    return nullptr;
 }
 
 Peak* TreeSpace::findPeakWithId(int id) {
@@ -447,10 +471,9 @@ TreeSpaceNode* TreeSpace::getTree(uint64_t treeHash) {
     if (it == treeNodes.end())
         {
         TreeSpaceNode* newNode = new TreeSpaceNode;
-        TreeCacheMap::iterator it = treeCache->find(treeHash);
-        if (it == treeCache->end())
+        TreeInfo* info = treeCache->getTreeInfo(treeHash);
+        if (info == nullptr)
             Msg::error("Could not find tree when constructing tree space");
-        TreeInfo* info = it->second;
         newNode->treeHash = treeHash;
         newNode->lnL = info->lnLikelihood;
         treeNodes.insert( std::make_pair(treeHash,newNode) );
@@ -572,7 +595,8 @@ void TreeSpace::printPosterior(TreeSamples* samples) {
     double sumTrue = 0.0, sumMcmc = 0.0;
     for (const auto& [key, value] : vec) 
         {
-        int peakId = findPeakIdForTreeWithHash(key);
+        Peak* peak = findPeakForTreeWithHash(key);
+        int peakId = peak->getPeakId();
         double mcmcApprox = samples->getTreeProbability(key);
         sumTrue += value;
         sumMcmc += mcmcApprox;

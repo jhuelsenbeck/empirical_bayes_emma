@@ -4,6 +4,10 @@
 
 
 
+CompactTree::CompactTree(const CompactTree& ct) : BitSet(ct) {
+
+}
+
 int CompactTree::bitsPerIndex(int n) {
 
     int bits = 0;

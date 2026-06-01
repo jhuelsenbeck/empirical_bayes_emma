@@ -66,7 +66,7 @@ void TreePartitions::addTree(Tree* t) {
         bf.returnToPool(partitions[i]);
 }
 
-void TreePartitions::comparePartitions(std::vector<TreePartitions*>& parts) {
+void TreePartitions::comparePartitions(std::vector<TreePartitions*>& parts, bool loudOutput) {
 
     size_t numChains = parts.size();
     if (numChains < 2)
@@ -180,44 +180,47 @@ void TreePartitions::comparePartitions(std::vector<TreePartitions*>& parts) {
     double asdsf = (numAbove > 0) ? sumStdDev / numAbove : 0.0;
 
     // per-split table
-    std::cout << std::fixed << std::setprecision(4);
-    std::cout << std::setw(5) << "#" << "  ";
-    std::cout << std::setw(n) << std::left << "split" << std::right;
-    for (size_t i=0; i<numChains; i++)
+    if (loudOutput == true)
         {
-        std::string label = "chain" + std::to_string(i+1);
-        std::cout << "  " << std::setw(8) << label;
-        }
-    std::cout << "  " << std::setw(8) << "mean";
-    std::cout << "  " << std::setw(8) << "stdev";
-    std::cout << "  " << std::setw(8) << "cv";
-    std::cout << "  " << std::setw(8) << "min";
-    std::cout << "  " << std::setw(8) << "max";
-    std::cout << '\n';
-
-    int idx = 0;
-    for (const SplitStats& r : rows)
-        {
-        std::cout << std::setw(5) << ++idx << "  ";
-        std::cout << std::setw(n) << std::left << r.split->bitString() << std::right;
-        for (double f : r.freqs)
-            std::cout << "  " << std::setw(8) << f;
-        std::cout << "  " << std::setw(8) << r.mean;
-        std::cout << "  " << std::setw(8) << r.stdDev;
-        std::cout << "  " << std::setw(8) << r.cv;
-        std::cout << "  " << std::setw(8) << r.minF;
-        std::cout << "  " << std::setw(8) << r.maxF;
+        std::cout << std::fixed << std::setprecision(4);
+        std::cout << std::setw(5) << "#" << "  ";
+        std::cout << std::setw(n) << std::left << "split" << std::right;
+        for (size_t i=0; i<numChains; i++)
+            {
+            std::string label = "chain" + std::to_string(i+1);
+            std::cout << "  " << std::setw(8) << label;
+            }
+        std::cout << "  " << std::setw(8) << "mean";
+        std::cout << "  " << std::setw(8) << "stdev";
+        std::cout << "  " << std::setw(8) << "cv";
+        std::cout << "  " << std::setw(8) << "min";
+        std::cout << "  " << std::setw(8) << "max";
         std::cout << '\n';
-        }
 
-    // cross-chain summary
-    std::cout << '\n';
-    std::cout << "Convergence diagnostics for split frequencies\n";
-    std::cout << "   Number of chains          = " << numChains << '\n';
-    std::cout << "   Total unique splits       = " << rows.size() << '\n';
-    std::cout << "   Splits with max p >= " << threshold << " = " << numAbove << '\n';
-    std::cout << "   ASDSF (max p >= " << threshold << ")    = " << asdsf << '\n';
-    std::cout << "   MSDSF (max p >= " << threshold << ")    = " << maxStdDev << '\n';
+        int idx = 0;
+        for (const SplitStats& r : rows)
+            {
+            std::cout << std::setw(5) << ++idx << "  ";
+            std::cout << std::setw(n) << std::left << r.split->bitString() << std::right;
+            for (double f : r.freqs)
+                std::cout << "  " << std::setw(8) << f;
+            std::cout << "  " << std::setw(8) << r.mean;
+            std::cout << "  " << std::setw(8) << r.stdDev;
+            std::cout << "  " << std::setw(8) << r.cv;
+            std::cout << "  " << std::setw(8) << r.minF;
+            std::cout << "  " << std::setw(8) << r.maxF;
+            std::cout << '\n';
+            }
+
+        // cross-chain summary
+        std::cout << '\n';
+        std::cout << "Convergence diagnostics for split frequencies\n";
+        std::cout << "   Number of chains          = " << numChains << '\n';
+        std::cout << "   Total unique splits       = " << rows.size() << '\n';
+        std::cout << "   Splits with max p >= " << threshold << " = " << numAbove << '\n';
+        std::cout << "   ASDSF (max p >= " << threshold << ")    = " << asdsf << '\n';
+        std::cout << "   MSDSF (max p >= " << threshold << ")    = " << maxStdDev << '\n';
+        }
 }
 
 void TreePartitions::print(void) {

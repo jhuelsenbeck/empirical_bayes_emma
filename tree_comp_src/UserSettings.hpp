@@ -8,36 +8,30 @@
 class UserSettings {
 
     public:
-        static UserSettings&   userSettings(void)
-                                    {
-                                    static UserSettings userSettings;
-                                    return userSettings;
-                                    }
-        double                  getBurnin(void) { return burnin; }
-        int                     getChainLength(void) { return chainLength; }
-        std::string             getInputFileName(void) { return inputFileName; }
-        int                     getNumChains(void) { return numChains; }
-        std::string             getOutputFileName(void) { return outputFileName; }
-        int                     getPrintFrequency(void) { return printFrequency; }
-        int                     getSampleFrequency(void) { return sampleFrequency; }
-        double                  getTemperature(void) { return temperature; }
-        void                    print(void);
-        void                    readSettings(int argc, char* argv[]);
+        static UserSettings&        userSettings(void)
+                                        {
+                                        static UserSettings userSettings;
+                                        return userSettings;
+                                        }
+        double                      getBurnin(void) { return burnin; }
+        bool                        getShouldAppend(void) { return appendResults; }
+        std::vector<std::string>&   getTreeFiles(void) { return treeFiles; }
+        std::string                 getTrueFile(void) { return trueFile; }
+        std::string                 getOutputFileName(void) { return outputFileName; }
+        void                        print(void);
+        void                        readSettings(int argc, char* argv[]);
     
     private:
-                                UserSettings(void);
-                                UserSettings(UserSettings& u) { }
-        void                    usage(void);
-        double                  burnin;
-        double                  temperature;
-        int                     numChains;
-        int                     chainLength;
-        int                     printFrequency;
-        int                     sampleFrequency;
-        std::string             inputFileName;
-        std::string             outputFileName;
-        bool                    settingsInitialized;
-        std::string             executableName;
+                                    UserSettings(void);
+                                    UserSettings(UserSettings& u) { }
+        void                        usage(void);
+        double                      burnin;
+        std::vector<std::string>    treeFiles;
+        std::string                 trueFile;
+        std::string                 outputFileName;
+        bool                        appendResults;
+        bool                        settingsInitialized;
+        std::string                 executableName;
 };
 
 #endif
