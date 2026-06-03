@@ -20,6 +20,7 @@ UserSettings::UserSettings(void) {
     inputFileName = "";
     outputFileName = "";
     burnin = 0.0;
+    numTwists = 0;
 }
 
 void UserSettings::readSettings(int argc, char* argv[]) {
@@ -75,6 +76,8 @@ void UserSettings::readSettings(int argc, char* argv[]) {
                 printFrequency = stod(cmd);
             else if (key == "-s")
                 sampleFrequency = stod(cmd);
+            else if (key == "-w")
+                numTwists = stod(cmd);
             else
                 Msg::error("Improperly formatted commands");
             readingKey = true;
@@ -95,6 +98,7 @@ void UserSettings::print(void) {
     std::cout << "   * Burn in fraction (-d)           = " << burnin << std::endl;
     std::cout << "   * Print frequency (-p)            = " << printFrequency << std::endl;
     std::cout << "   * Sample frequency (-s)           = " << sampleFrequency << std::endl;
+    std::cout << "   * Num alignment twists (-w)       = " << numTwists << std::endl;
     std::cout << std::endl;
 }
 
@@ -108,5 +112,6 @@ void UserSettings::usage(void) {
     std::cout << "-d        MCMC burn-in fraction" << std::endl;
     std::cout << "-p        Print to screen frequency" << std::endl;
     std::cout << "-s        Chain sample frequency" << std::endl;
+    std::cout << "-w        Number of alignment twists (permutations)" << std::endl;
     Msg::error("Incorrectly formatted command line input");
 }

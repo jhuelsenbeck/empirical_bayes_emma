@@ -11,8 +11,8 @@ class NodeFactory {
     public:
         static NodeFactory& nodeFactory(void) 
                                 {
-                                static NodeFactory nf;
-                                return nf;
+                                static thread_local NodeFactory factory;
+                                return factory;
                                 }
         Node*               getNode(void);
         int                 getNumAllocated(void) { return static_cast<int>(allocated.size()); }

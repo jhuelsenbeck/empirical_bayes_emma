@@ -114,7 +114,7 @@ Alignment::Alignment(Alignment& a, int nt, RandomVariable* rng) :
     sort(taxonIndices.begin(),taxonIndices.end());
     
     for (int i=0; i<taxonIndices.size(); i++)
-        taxonNames.push_back(a.taxonNames[i]);
+        taxonNames.push_back(a.taxonNames[taxonIndices[i]]);
 
     for (int i=0; i<numTaxa; i++)
         {

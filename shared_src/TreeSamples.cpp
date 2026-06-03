@@ -11,6 +11,13 @@ TreeSamples::TreeSamples(TreeCache* tc) : treeCache(tc), numSamples(0) {
 
 }
 
+void TreeSamples::clear(void) {
+
+    treeCounts.clear();
+    trees.clear();
+    numSamples = 0;
+}
+
 void TreeSamples::compareSamples(std::vector<TreeSamples*>& sampleVec) {
 
     size_t numChains = sampleVec.size();
@@ -20,8 +27,6 @@ void TreeSamples::compareSamples(std::vector<TreeSamples*>& sampleVec) {
         return;
         }
 
-    // chains must be at the same cycle for the per-cycle comparisons
-    // (first-hit, log-spaced traces) to be meaningful
     int numCycles = sampleVec[0]->numSamples;
     for (size_t i=1; i<numChains; i++)
         {
@@ -34,9 +39,6 @@ void TreeSamples::compareSamples(std::vector<TreeSamples*>& sampleVec) {
     if (numCycles == 0)
         return;
 
-    // pool counts to identify globally most-probable trees; each chain's
-    // own MAP may not match the combined MAP early on, which is itself
-    // diagnostically interesting
     TreeCountMap combinedCounts;
     for (size_t i=0; i<numChains; i++)
         for (auto& [hash, cnt] : sampleVec[i]->treeCounts)
@@ -51,13 +53,9 @@ void TreeSamples::compareSamples(std::vector<TreeSamples*>& sampleVec) {
         return a.first < b.first;
         });
 
-    // long tail of singleton trees clutters early-cycle diagnostics;
-    // top 10 captures the part of the posterior worth tracking
     size_t topK = std::min<size_t>(ranked.size(), 10);
     double totalSamples = (double)numCycles * numChains;
 
-    // pre-compute per-tree per-chain stats so each ends up in its own
-    // table -- a single wide table is unreadable for >2 chains
     std::vector<std::vector<double>> chainProb(topK, std::vector<double>(numChains, 0.0));
     std::vector<std::vector<double>> chainESS (topK, std::vector<double>(numChains, 0.0));
     std::vector<std::vector<int>>    chainHit (topK, std::vector<int>   (numChains, 0));
@@ -73,9 +71,6 @@ void TreeSamples::compareSamples(std::vector<TreeSamples*>& sampleVec) {
 
             chainESS[r][c] = computeIndicatorESS(sampleVec[c]->trees, h);
 
-            // first-hit cycle (1-indexed); 0 means never sampled in this chain.
-            // This is the cleanest "did the chain find the meat?" metric --
-            // small numbers with low variance across chains is what you want
             const std::vector<uint64_t>& trace = sampleVec[c]->trees;
             for (size_t t=0; t<trace.size(); t++)
                 {
@@ -88,76 +83,93 @@ void TreeSamples::compareSamples(std::vector<TreeSamples*>& sampleVec) {
             }
         }
 
-    std::cout << "Cross-chain tree sample diagnostics (cycle " << numCycles << ")\n";
-    std::cout << "   Number of chains   = " << numChains << "\n";
-    std::cout << "   Total unique trees = " << combinedCounts.size() << "\n";
+    std::cout << "   Cross-chain tree sample diagnostics (cycle " << numCycles << ")\n";
+    std::cout << "   * Number of chains   = " << numChains << "\n";
+    std::cout << "   * Total unique trees = " << combinedCounts.size() << "\n";
 
-    // P(tree) per chain -- each row is one of the top combined trees
     std::cout << std::fixed << std::setprecision(4);
     std::cout << "\n   P(tree) per chain (combP = pooled probability):\n";
-    std::cout << "   " << std::setw(4) << "#" << "  " << std::setw(20) << "hash"
+    std::cout << "   " << std::setw(4) << "#" << " " << std::setw(20) << "hash"
               << "  " << std::setw(8) << "combP";
-    for (size_t c=0; c<numChains; c++)
-        std::cout << "  " << std::setw(8) << ("chain" + std::to_string(c+1));
+//    for (size_t c=0; c<numChains; c++)
+//        std::cout << "  " << std::setw(8) << ("chain" + std::to_string(c+1));
     std::cout << "\n";
     for (size_t r=0; r<topK; r++)
         {
         double pCombined = (double)ranked[r].second / totalSamples;
         std::cout << "   " << std::setw(4) << (r+1)
-                  << "  " << std::setw(20) << ranked[r].first
-                  << "  " << std::setw(8) << pCombined;
+                  << " " << std::setw(20) << ranked[r].first
+                  << " " << std::setw(6) << pCombined;
         for (size_t c=0; c<numChains; c++)
-            std::cout << "  " << std::setw(8) << chainProb[r][c];
+            {
+            std::cout << " " << std::setw(6) << chainProb[r][c];
+            if ((c+1) % 10 == 0 && c+1 != numChains)
+                {
+                std::cout << std::endl;
+                std::cout << "                            ";
+                }
+            }
         std::cout << "\n";
         }
 
-    // ESS for the binary indicator 1[T_t == tree] -- this is per-tree
-    // mixing efficiency. ESS << numCycles means the chain is autocorrelated
-    // around that topology (sticky moves, poor topology proposals, etc.)
     std::cout << std::setprecision(1);
     std::cout << "\n   ESS for the indicator trace 1[T_t == tree]:\n";
-    std::cout << "   " << std::setw(4) << "#";
-    for (size_t c=0; c<numChains; c++)
-        std::cout << "  " << std::setw(10) << ("chain" + std::to_string(c+1));
-    std::cout << "\n";
-    for (size_t r=0; r<topK; r++)
-        {
-        std::cout << "   " << std::setw(4) << (r+1);
-        for (size_t c=0; c<numChains; c++)
-            std::cout << "  " << std::setw(10) << chainESS[r][c];
-        std::cout << "\n";
-        }
-
-    // first-hit: when the chain first sampled this tree
-    std::cout << "\n   First-hit cycle (--- = never sampled):\n";
-    std::cout << "   " << std::setw(4) << "#";
-    for (size_t c=0; c<numChains; c++)
-        std::cout << "  " << std::setw(10) << ("chain" + std::to_string(c+1));
-    std::cout << "\n";
+//    std::cout << "   " << std::setw(4) << "#";
+//    for (size_t c=0; c<numChains; c++)
+//        std::cout << "  " << std::setw(10) << ("chain" + std::to_string(c+1));
+//    std::cout << "\n";
     for (size_t r=0; r<topK; r++)
         {
         std::cout << "   " << std::setw(4) << (r+1);
         for (size_t c=0; c<numChains; c++)
             {
-            if (chainHit[r][c] == 0)
-                std::cout << "  " << std::setw(10) << "---";
-            else
-                std::cout << "  " << std::setw(10) << chainHit[r][c];
+            std::cout << " " << std::setw(10) << chainESS[r][c];
+            if ((c+1) % 10 == 0 && c+1 != numChains)
+                {
+                std::cout << std::endl;
+                std::cout << "       ";
+                }
             }
         std::cout << "\n";
         }
 
-    // exploration breadth -- chains finding similar numbers of unique
-    // topologies suggests they're sampling the same effective region
-    std::cout << "\n   Per-chain unique trees:";
+    std::cout << "\n   First-hit cycle (--- = never sampled):\n";
+//    std::cout << "   " << std::setw(4) << "#";
+//    for (size_t c=0; c<numChains; c++)
+//        std::cout << "  " << std::setw(10) << ("chain" + std::to_string(c+1));
+//    std::cout << "\n";
+    for (size_t r=0; r<topK; r++)
+        {
+        std::cout << "   * " << std::setw(4) << (r+1);
+        for (size_t c=0; c<numChains; c++)
+            {
+            if (chainHit[r][c] == 0)
+                std::cout << " " << std::setw(6) << "---";
+            else
+                std::cout << " " << std::setw(6) << chainHit[r][c];
+            if ((c+1) % 10 == 0 && c+1 != numChains)
+                {
+                std::cout << std::endl;
+                std::cout << "         ";
+                }
+            }
+        std::cout << "\n";
+        }
+
+    std::cout << "\n   Per-chain unique trees:" << std::endl;
+    std::cout << "     ";
     for (size_t c=0; c<numChains; c++)
-        std::cout << "  " << sampleVec[c]->treeCounts.size();
+        {
+        std::cout << " " << std::setw(8) << sampleVec[c]->treeCounts.size();
+        if ((c+1) % 10 == 0 && c+1 != numChains)
+            {
+            std::cout << std::endl;
+            std::cout << "     ";
+            }
+        }
     std::cout << "\n";
 }
 
-// ESS for a binary indicator x_t = 1[trace[t] == target] using Geyer's
-// initial positive sequence estimator. Returns N when the trace is constant
-// (target absent or always present) since variance is undefined there.
 double TreeSamples::computeIndicatorESS(const std::vector<uint64_t>& trace, uint64_t target) {
 
     size_t N = trace.size();
@@ -171,14 +183,9 @@ double TreeSamples::computeIndicatorESS(const std::vector<uint64_t>& trace, uint
     if (hits == 0 || hits == N)
         return (double)N;
 
-    // for a Bernoulli indicator the lag-0 biased autocovariance simplifies
-    // exactly to mu*(1-mu), no need to compute it from data
     double mean = (double)hits / N;
     double var  = mean * (1.0 - mean);
 
-    // cap maxLag for cost; with the initial-positive cutoff this rarely
-    // matters in practice -- a chain with rho > 0 past lag 2048 has
-    // catastrophic ESS regardless of the exact estimate
     size_t maxLag = N / 4;
     if (maxLag > 2048)
         maxLag = 2048;
@@ -186,8 +193,6 @@ double TreeSamples::computeIndicatorESS(const std::vector<uint64_t>& trace, uint
     double tauSum = 1.0;
     for (size_t k=1; k<=maxLag; k++)
         {
-        // standard biased autocovariance estimator (denominator N, not N-k);
-        // this is what coda, PyMC, and MrBayes use
         double gamma = 0.0;
         for (size_t i=0; i+k<N; i++)
             {
@@ -208,30 +213,27 @@ double TreeSamples::computeIndicatorESS(const std::vector<uint64_t>& trace, uint
     return (double)N / tauSum;
 }
 
-double TreeSamples::getTreeProbability(uint64_t treeHash) {
+double TreeSamples::getTreeProbability(uint64_t treeHash) const {
 
-    TreeCountMap::iterator it = treeCounts.find(treeHash);
-    if (it != treeCounts.end())
+    TreeCountMap::const_iterator it = treeCounts.find(treeHash);
+    if (it != treeCounts.end() && numSamples > 0)
         return (double)it->second / numSamples;
     return 0.0;
 }
 
-void TreeSamples::print(void) {
+void TreeSamples::print(void) const {
 
-    // collect entries from the map
     std::vector<std::pair<uint64_t, std::size_t>> entries;
     entries.reserve(treeCounts.size());
-    for (const auto &kv : treeCounts) 
+    for (const auto &kv : treeCounts)
         entries.emplace_back(kv.first, kv.second);
 
-    // sort by count descending; tie-break by hash ascending for determinism
     std::sort(entries.begin(), entries.end(), [](const auto &a, const auto &b) {
-        if (a.second != b.second) return a.second > b.second; // higher counts first
-        return a.first < b.first; // smaller hash first on ties
+        if (a.second != b.second) return a.second > b.second;
+        return a.first < b.first;
     });
 
-    // print sorted results
-    double sumExact = 0.0, sumMcmc = 0.0;;
+    double sumExact = 0.0, sumMcmc = 0.0;
     int i = 0;
     for (const auto &e : entries)
         {
@@ -239,28 +241,28 @@ void TreeSamples::print(void) {
         if (tInfo == nullptr)
             Msg::error("Could not find tree in cache");
         double lnL = tInfo->lnLikelihood;
-        double prob = (double)e.second / numSamples;
+        double prob = (numSamples > 0 ? (double)e.second / numSamples : 0.0);
         sumMcmc += prob;
         sumExact += tInfo->posteriorProbability;
         std::cout << std::setw(5) << ++i << " -- ";
         std::cout << std::fixed << std::setprecision(4);
         std::cout << std::setw(21) << e.first << " " << lnL << " " << " " << tInfo->posteriorProbability << " ";
         std::cout << prob << " " << sumMcmc <<  " -- ";
-        std::cout << "(" << tInfo->firstHit << ", " << tInfo->residenceCount << ", " << tInfo->numRevisits << ")";
+        std::cout << "count=" << e.second;
         std::cout << std::endl;
         if (sumExact > 0.99 && sumMcmc > 0.99)
             break;
         }
 }
 
-void TreeSamples::compbinedPrint(std::vector<TreeSamples*>& sampleVec) {
+void TreeSamples::combinedPrint(std::vector<TreeSamples*>& sampleVec) {
 
     if (sampleVec.size() == 0)
         {
         std::cout << "No tree samples to combine" << std::endl;
         return;
         }
-        
+
     TreeCountMap combinedCounts;
     combinedCounts.insert(sampleVec[0]->treeCounts.begin(), sampleVec[0]->treeCounts.end());
     for (size_t i=1; i<sampleVec.size(); i++)
@@ -270,23 +272,19 @@ void TreeSamples::compbinedPrint(std::vector<TreeSamples*>& sampleVec) {
             {
             TreeCountMap::iterator it = combinedCounts.find(key);
             if (it == combinedCounts.end())
-                {
                 combinedCounts.insert(std::make_pair(key,val));
-                }
-            else 
+            else
                 it->second += val;
             }
         }
-    
-    // collect entries from the map
+
     std::vector<std::pair<uint64_t, double>> entries;
-    for (const auto &kv : combinedCounts) 
+    for (const auto &kv : combinedCounts)
         entries.emplace_back(kv.first, kv.second);
 
-    // sort by count descending; tie-break by hash ascending for determinism
     std::sort(entries.begin(), entries.end(), [](const auto &a, const auto &b) {
-        if (a.second != b.second) return a.second > b.second; // higher counts first
-        return a.first < b.first; // smaller hash first on ties
+        if (a.second != b.second) return a.second > b.second;
+        return a.first < b.first;
     });
 
     std::cout << "   Tree posterior probabilities:" << std::endl;
@@ -294,17 +292,25 @@ void TreeSamples::compbinedPrint(std::vector<TreeSamples*>& sampleVec) {
     for (const auto &e : entries)
         {
         std::cout << "   * ";
-        std::cout << std::setw(4) << ++i << " " << std::setw(20) << e.first << " -- ";
+        std::cout << std::left << std::setw(4) << ++i << " " << std::setw(20) << e.first << " -- ";
+        int cnt = 0;
         for (TreeSamples* s : sampleVec)
             {
+            cnt++;
             TreeCountMap::iterator it = s->treeCounts.find(e.first);
             double x = 0.0;
-            if (it != s->treeCounts.end())
+            if (it != s->treeCounts.end() && s->numSamples > 0)
                 x = (double)it->second / s->numSamples;
             std::cout << std::setprecision(3) << x << " ";
+            if (cnt % 10 == 0 && cnt != sampleVec.size())
+                {
+                std::cout << std::endl;
+                std::cout << "                                  ";
+                }
             }
         std::cout << std::endl;
         }
+    std::cout << std::endl;
 }
 
 void TreeSamples::sampleTree(uint64_t treeHash) {
@@ -312,14 +318,10 @@ void TreeSamples::sampleTree(uint64_t treeHash) {
     numSamples++;
     TreeCountMap::iterator it = treeCounts.find(treeHash);
     if (it == treeCounts.end())
-        {
         treeCounts.insert(std::make_pair(treeHash,1));
-        }
-    else 
-        {
+    else
         it->second++;
-        }
-        
+
     trees.push_back(treeHash);
 }
 
@@ -341,8 +343,6 @@ void TreeSamples::writeStatsLine(std::ostream& os, std::vector<TreeSamples*>& sa
     int numCycles = sampleVec[0]->numSamples;
     if (numCycles == 0)
         {
-        // header has fixed columns; pad with zeros so a tail-following
-        // log parser doesn't choke on a partial line
         os << 0 << '\t' << 0 << '\t' << 0;
         for (int pass=0; pass<4; pass++)
             for (size_t c=0; c<numChains; c++)
@@ -350,9 +350,6 @@ void TreeSamples::writeStatsLine(std::ostream& os, std::vector<TreeSamples*>& sa
         return;
         }
 
-    // pool counts to find the current combined MAP. Note that this MAP
-    // can shift cycle-to-cycle early in the run; the mapHash column
-    // makes that visible (and is itself a useful diagnostic)
     TreeCountMap combinedCounts;
     for (size_t i=0; i<numChains; i++)
         for (auto& [hash, cnt] : sampleVec[i]->treeCounts)
@@ -372,20 +369,16 @@ void TreeSamples::writeStatsLine(std::ostream& os, std::vector<TreeSamples*>& sa
 
     os << combinedCounts.size() << '\t' << mapHash << '\t' << combinedPMap;
 
-    // P(MAP) per chain
     for (size_t c=0; c<numChains; c++)
         {
         TreeCountMap::iterator it = sampleVec[c]->treeCounts.find(mapHash);
-        double p = (it != sampleVec[c]->treeCounts.end()) ? (double)it->second / sampleVec[c]->numSamples : 0.0;
+        double p = (it != sampleVec[c]->treeCounts.end() && sampleVec[c]->numSamples > 0) ? (double)it->second / sampleVec[c]->numSamples : 0.0;
         os << '\t' << p;
         }
 
-    // ESS for the MAP indicator per chain. This is the dominant cost in
-    // writeStatsLine: O(N * maxLag) where maxLag is capped at 2048
     for (size_t c=0; c<numChains; c++)
         os << '\t' << computeIndicatorESS(sampleVec[c]->trees, mapHash);
 
-    // first-hit cycle for the MAP per chain (0 = never seen)
     for (size_t c=0; c<numChains; c++)
         {
         const std::vector<uint64_t>& trace = sampleVec[c]->trees;

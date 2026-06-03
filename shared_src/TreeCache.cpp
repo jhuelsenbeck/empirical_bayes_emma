@@ -1,28 +1,10 @@
+#include <algorithm>
+#include <cmath>
 #include "CompactTree.hpp"
 #include "Msg.hpp"
 #include "Tree.hpp"
 #include "TreeCache.hpp"
 
-
-void TreeCache::cleanCacheStatistics(void) {
-
-    for (TreeCacheMap::const_iterator it = treeCache.begin(); it != treeCache.end(); ++it)
-        {
-        TreeInfo* info = it->second;
-        if (info == nullptr)
-            Msg::error("Tree information not present");
-        info->meanFirstHit = 0.0;
-        info->m2FirstHit = 0.0;
-        info->meanNumRevisits = 0.0;
-        info->m2NumRevisits = 0.0;
-        info->meanResidenceCount = 0.0;
-        info->m2ResidenceCount = 0.0;
-        info->firstHit = std::numeric_limits<unsigned>::max();
-        info->residenceCount = 0;
-        info->numRevisits = 0;
-        info->hasBeenVisited = false;
-        }
-}
 
 TreeInfo* TreeCache::getTreeInfo(uint64_t treeHash) {
 
@@ -70,6 +52,7 @@ size_t TreeCache::cacheSize(void) {
         if (info->compactTree != nullptr)
             total += info->compactTree->sizeInBytes();
         total += info->neighbors.capacity() * sizeof(TreeInfo*);
+        total += info->neighborProposalProbabilities.capacity() * sizeof(double);
         // info->tree intentionally not counted (size unknown, may be shared/transient)
         }
 
@@ -114,5 +97,113 @@ void TreeCache::injectTreesAndLikelihoods(TreeCache* tc) {
             it->second->hasLnLikelihood = val->hasLnLikelihood;
             it->second->posteriorProbability = val->posteriorProbability;
             }
+        }
+}
+
+const std::vector<double>& TreeCache::neighborProposalProbabilities(TreeInfo* info, double power) {
+
+    if (info == nullptr)
+        Msg::error("Cannot cache proposal probabilities for a null TreeInfo");
+
+    if (info->neighbors.size() == 0)
+        Msg::error("Cannot cache proposal probabilities before neighbors are generated");
+
+    if (info->hasNeighborProposalProbabilities == true &&
+        info->neighborProposalPower == power &&
+        info->neighborProposalProbabilities.size() == info->neighbors.size())
+        return info->neighborProposalProbabilities;
+
+    double maxLnL = info->neighbors[0]->lnLikelihood;
+    for (size_t i=1; i<info->neighbors.size(); i++)
+        {
+        TreeInfo* neighbor = info->neighbors[i];
+        if (neighbor == nullptr)
+            Msg::error("Null neighbor in TreeInfo");
+        if (neighbor->hasLnLikelihood == false)
+            Msg::error("Cannot cache proposal probabilities before likelihoods are calculated");
+        if (neighbor->lnLikelihood > maxLnL)
+            maxLnL = neighbor->lnLikelihood;
+        }
+
+    std::vector<double>& probs = info->neighborProposalProbabilities;
+    probs.resize(info->neighbors.size());
+
+    double sum = 0.0;
+    for (size_t i=0; i<info->neighbors.size(); i++)
+        {
+        double x = std::exp((info->neighbors[i]->lnLikelihood - maxLnL) * power);
+        probs[i] = x;
+        sum += x;
+        }
+
+    if (sum <= 0.0 || std::isfinite(sum) == false)
+        Msg::error("Bad normalization constant for proposal probabilities");
+
+    double factor = 1.0 / sum;
+    for (size_t i=0; i<probs.size(); i++)
+        probs[i] *= factor;
+
+    info->neighborProposalPower = power;
+    info->hasNeighborProposalProbabilities = true;
+
+    return probs;
+}
+
+void TreeCache::cacheNeighborProposalProbabilities(double power) {
+
+    for (auto& [hash, info] : treeCache)
+        {
+        if (info == nullptr)
+            continue;
+        if (info->neighbors.size() == 0)
+            continue;
+        neighborProposalProbabilities(info, power);
+        }
+}
+
+void TreeCache::sortNeighborsByLikelihood(void) {
+
+    for (auto& [hash, info] : treeCache)
+        {
+        if (info == nullptr)
+            continue;
+
+        std::vector<TreeInfo*>& neighbors = info->neighbors;
+
+        std::sort(neighbors.begin(),
+                  neighbors.end(),
+                  [](TreeInfo* a, TreeInfo* b)
+                  {
+                  if (a == nullptr && b == nullptr)
+                      return false;
+                  if (a == nullptr)
+                      return false;
+                  if (b == nullptr)
+                      return true;
+
+                  // Trees with known likelihoods first
+                  if (a->hasLnLikelihood == true &&
+                      b->hasLnLikelihood == false)
+                      return true;
+
+                  if (a->hasLnLikelihood == false &&
+                      b->hasLnLikelihood == true)
+                      return false;
+
+                  // Neither has a likelihood
+                  if (a->hasLnLikelihood == false &&
+                      b->hasLnLikelihood == false)
+                      return a->hash < b->hash;
+
+                  // Highest likelihood first
+                  if (a->lnLikelihood != b->lnLikelihood)
+                      return a->lnLikelihood > b->lnLikelihood;
+
+                  // Deterministic tie breaker
+                  return a->hash < b->hash;
+                  });
+
+        info->hasNeighborProposalProbabilities = false;
+        info->neighborProposalPower = std::numeric_limits<double>::quiet_NaN();
         }
 }

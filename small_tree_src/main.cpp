@@ -13,6 +13,7 @@
 #include "TreeSpace.hpp"
 #include "UserSettings.hpp"
 
+void generateNeighbors(TreeCache& treeCache, TreeNeighbors& generator, std::string label);
 void printHeader(void);
 
 
@@ -26,16 +27,19 @@ int main(int argc, char* argv[]) {
     ThreadPool threads;
 
     // read the user settings
-    UserSettings::userSettings().readSettings(argc, argv);
-    UserSettings::userSettings().print();
+    UserSettings& settings = UserSettings::userSettings();
+    settings.readSettings(argc, argv);
+    settings.print();
     
     // read the alignment file
-    int numTaxa = 8;
-    Alignment* originalAlignment = new Alignment(UserSettings::userSettings().getInputFileName());
+    int numTaxa = 10;
+    Alignment* originalAlignment = new Alignment(settings.getInputFileName());
     Alignment* data = originalAlignment;
     if (originalAlignment->getNumTaxa() > numTaxa)
         data = new Alignment(*originalAlignment, numTaxa, &rng);
-    data->print(UserSettings::userSettings().getOutputFileName() + ".nex");
+    data->print(settings.getOutputFileName() + ".nex");
+    if (settings.getNumTwists() > 0)
+        data->twist(&rng, settings.getNumTwists());
     data->summarize();
     data->compress();
     BitSetFactory::getFactory().initialize(data->getNumTaxa());
@@ -46,49 +50,46 @@ int main(int argc, char* argv[]) {
     ExhaustiveSearch exhaustive(data, &treeCacheNni, &threads);
 
     // generate the NNI neighbors for each tree
-    std::cout << "   Generating NNI neighbors for all " << treeCacheNni.size() << " trees" << std::endl;
     TreeNeighborGeneratorNNI treeNeighborGeneratorNni(&treeCacheNni);
     TreeNeighbors treeNeighborsNni(&treeCacheNni, &treeNeighborGeneratorNni, data->getNumTaxa());
-    TreeCacheMap& nniCache = treeCacheNni.getCache();
-    for (auto& [key,val] : nniCache)
-        treeNeighborsNni.neighbors(val->tree);
+    generateNeighbors(treeCacheNni, treeNeighborsNni, "NNI");
         
     // generate the TBR neighbors for each tree
     TreeCache treeCacheTbr;
     treeCacheTbr.injectTreesAndLikelihoods(&treeCacheNni);
-    std::cout << "   Generating TBR neighbors for all " << treeCacheTbr.size() << " trees" << std::endl;
     TreeNeighborGeneratorTBR treeNeighborGeneratorTbr(&treeCacheTbr);
     TreeNeighbors treeNeighborsTbr(&treeCacheTbr, &treeNeighborGeneratorTbr, data->getNumTaxa());
-    TreeCacheMap& tbrCache = treeCacheTbr.getCache();
-    for (auto& [key,val] : tbrCache)
-        treeNeighborsTbr.neighbors(val->tree);
+    generateNeighbors(treeCacheTbr, treeNeighborsTbr, "TBR");
     
     // determine the tree landscapes for NNI and TBR
-    TreeSpace treeSpaceNni(&treeCacheNni);
+    TreeSpace treeSpaceNni(&treeCacheNni, "NNI");
     treeSpaceNni.characterize();
     treeSpaceNni.printPosterior();
-    treeSpaceNni.printPosterior(UserSettings::userSettings().getOutputFileName() + ".true");
-    TreeSpace treeSpaceTbr(&treeCacheTbr);
+    treeSpaceNni.printPosterior(settings.getOutputFileName() + ".true");
+    TreeSpace treeSpaceTbr(&treeCacheTbr, "TBR");
     treeSpaceTbr.characterize();
+    treeSpaceNni.writeRuggednessStatistics(settings.getOutputFileName() + ".nni.ruggedness.tsv");
+    treeSpaceTbr.writeRuggednessStatistics(settings.getOutputFileName() + ".tbr.ruggedness.tsv");
         
     // Markov chain Monte Carlo exploration of tree space
-    std::vector<double> powers = { 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.0 };
+    std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5 };
     std::vector<TreeCache*> treeCache = { &treeCacheNni, &treeCacheTbr };
-    std::vector<TreeSpace*> treeSpace = { &treeSpaceNni, &treeSpaceTbr };
     std::vector<TreeNeighbors*> treeNeighbors = { &treeNeighborsNni, &treeNeighborsTbr };
     std::vector<std::string> swapName = { "nni", "tbr" };
+    int nReps = 100;
     for (int swapType=0; swapType<2; swapType++)
         {
-        int nReps = 5;
         for (double power : powers)
             {
-            std::cout << "Analysis: " << swapType << " " << power << std::endl;
-            std::string convergenceFileName = "conv_" + swapName[swapType] + "_" + std::to_string(power);
+            std::string convergenceFileName = ".conv_" + swapName[swapType] + "_" + std::to_string(power);
+            std::string label = "MCMC (" + swapName[swapType] + ", " + std::to_string(power) + ")";
             Mcmc mcmc(&rng, &threads, treeCache[swapType], &treeLikelihoods, treeNeighbors[swapType], data, true, convergenceFileName);
-            mcmc.run(power, nReps);
-            mcmc.welfordUpdate(nReps);
-            Mcmc::welfordSummary(treeSpace[swapType], treeCache[swapType], nReps);
-            treeCacheNni.cleanCacheStatistics();
+            mcmc.run(label, power, nReps);
+            
+            convergenceFileName = ".conv_mc3_" + swapName[swapType] + "_" + std::to_string(power);
+            label = "MCMCMC (" + swapName[swapType] + ", " + std::to_string(power) + ")";
+            Mcmc mcmcmc(&rng, &threads, treeCache[swapType], &treeLikelihoods, treeNeighbors[swapType], data, true, convergenceFileName);
+            mcmcmc.run(label, power, nReps, 4);
             }
         }
     
@@ -100,6 +101,47 @@ int main(int argc, char* argv[]) {
     treeCacheTbr.freeTreeCache();
     
     return EXIT_SUCCESS;
+}
+
+void generateNeighbors(TreeCache& treeCache, TreeNeighbors& treeNeighbors, std::string label) {
+
+    TreeCacheMap& cache = treeCache.getCache();
+
+    int barWidth = 60, numAsterices = 0;
+    size_t numTrees = cache.size();
+    size_t treeCnt = 0;
+
+    std::cout << "   Generating " << label << " neighbors for all "
+              << numTrees << " trees:" << std::endl;
+
+    std::cout << "   * [";
+    for (int i=0; i<barWidth; i++)
+        {
+        if ((i+1) % (int)(barWidth*0.1) == 0 && i+1 != barWidth)
+            std::cout << "|";
+        else
+            std::cout << "-";
+        }
+    std::cout << "]" << std::endl;
+
+    std::cout << "   * [";
+
+    for (auto& [key,val] : cache)
+        {
+        treeNeighbors.neighbors(val->tree);
+
+        treeCnt++;
+
+        double progress = static_cast<double>(treeCnt) / numTrees;
+        int filledWidth = static_cast<int>(progress * barWidth);
+
+        for (int i=0; i<filledWidth-numAsterices; i++)
+            std::cout << "*" << std::flush;
+
+        numAsterices = filledWidth;
+        }
+
+    std::cout << "]" << std::endl << std::endl;
 }
 
 void printHeader(void) {

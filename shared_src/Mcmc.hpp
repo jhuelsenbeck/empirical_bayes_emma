@@ -1,76 +1,68 @@
 #ifndef Mcmc_hpp
 #define Mcmc_hpp
 
+#include <cstdint>
 #include <fstream>
+#include <string>
+#include <utility>
 #include <vector>
+#include "Threads.hpp"
 #include "TreeCache.hpp"
+
 class Alignment;
 class LikelihoodCalculator;
 class RandomVariable;
-class ThreadPool;
-class Tree;
 class TreeLikelihoods;
 class TreeNeighbors;
 class TreePartitions;
 class TreeSamples;
-class TreeSpace;
-typedef std::vector<LikelihoodCalculator*> CalculatorVector;
-
-
 
 class Mcmc {
 
     public:
-                                        Mcmc(void) = delete;
-                                        Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a, bool tf, std::string convergenceFileName);
-                                       ~Mcmc(void);
-        std::vector<TreeSamples*>&      getSamples(void) { return samples; }
-        void                            run(double power);
-        void                            run(double power, int numRuns);
-        void                            run(double power, int numRuns, int numChains);
-        void                            welfordUpdate(double n);
-        static void                     welfordSummary(TreeSpace* ts, TreeCache* tc, double n);
-    
+                                    Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a, bool tf=false, std::string cfn="");
+                                   ~Mcmc(void);
+
+        void                        run(std::string label, double power);
+        void                        run(std::string label, double power, int numRuns);
+        void                        run(std::string label, double power, int numRuns, int numHeatedChains);
+
     private:
-        double                          calculateMaximumLikelihood(Tree* currentTree);
-        double                          calculateMaximumLikelihood(std::vector<TreeInfo*>& vals);
-        std::pair<int,int>              chooseChains(int numChains);
-        double                          chooseTree(std::vector<TreeInfo*>& neighbors, std::vector<double>& probs, Tree*& tree, double& lnL);
-        int                             coldChainIndex(std::vector<int>& chainIndices);
-        void                            deleteSamplesAndPartitions(void);
-        double                          findTreeProbability(std::vector<TreeInfo*>& neighbors, std::vector<double>& probs, uint64_t tree);
-        LikelihoodCalculator*           getCalculator(void);
-        double                          heat(int i, double temperature);
-        void                            normalize(double power, std::vector<TreeInfo*>& neighbors, std::vector<double>& probs);
-        void                            printTreeToFile(int n, Tree* currentTree);
-        void                            printToScreen(int n, double curLnL, double newLnL);
-        void                            printToScreen(int n, std::vector<double>& curLnL);
-        void                            printToScreen(int n, std::vector<std::vector<double>>& curLnL, std::vector<std::vector<int>>& indices);
-        void                            recordState(int n, bool accept, uint64_t currentTreeHash, uint64_t newTreeHash);
-        void                            returnCalculator(LikelihoodCalculator* calculator);
-        void                            openConvergenceLog(void);
-        void                            openTreeFile(void);
-        void                            writeConvergenceLine(int cycle);
-        std::string                     convergenceLogFileName;
-        std::ofstream                   convergenceLog;
-        std::ofstream                   treeStrm;
-        RandomVariable*                 rng;
-        ThreadPool*                     threadPool;
-        Alignment*                      alignment;
-        TreeCache*                      treeCache;
-        TreeLikelihoods*                treeLikelihoods;
-        TreeNeighbors*                  treeNeighbors;
-        std::vector<TreePartitions*>    partitions;
-        std::vector<TreeSamples*>       samples;
-        double                          temperature;
-        int                             numChains;
-        int                             numCycles;
-        int                             printFrequency;
-        int                             sampleFrequency;
-        CalculatorVector                activeCalculators;
-        CalculatorVector                calculatorPool;
-        CalculatorVector                allocatedCalculators;
-        bool                            expandedOutput;
+        std::pair<int,int>          chooseChains(int numChains);
+        TreeInfo*                   chooseInitialTreeInfo(void);
+        TreeInfo*                   chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbability);
+        int                         coldChainIndex(std::vector<int>& chainIndices);
+        void                        deleteSamplesAndPartitions(void);
+        double                      findTreeProbability(TreeInfo* fromInfo, uint64_t toHash);
+        LikelihoodCalculator*       getCalculator(void);
+        double                      heat(int i, double temperature);
+        void                        openConvergenceLog(size_t numReplicates);
+        void                        printToScreen(int n, double curLnL, double newLnL);
+        void                        printToScreen(int n, std::vector<double>& curLnL);
+        void                        printToScreen(int n, std::vector<std::vector<double>>& curLnL, std::vector<std::vector<int>>& indices);
+        void                        returnCalculator(LikelihoodCalculator* calculator);
+        void                        writeConvergenceLine(int cycle);
+
+        RandomVariable*             rng;
+        ThreadPool*                 threadPool;
+        Alignment*                  alignment;
+        TreeCache*                  treeCache;
+        TreeLikelihoods*            treeLikelihoods;
+        TreeNeighbors*              treeNeighbors;
+        bool                        expandedOutput;
+        std::string                 convergenceLogFileName;
+        int                         numChains;
+        double                      temperature;
+        int                         numCycles;
+        int                         printFrequency;
+        int                         sampleFrequency;
+
+        std::ofstream               convergenceLog;
+        std::vector<TreeSamples*>   samples;
+        std::vector<TreePartitions*> partitions;
+
+        std::vector<LikelihoodCalculator*> allocatedCalculators;
+        std::vector<LikelihoodCalculator*> calculatorPool;
 };
 
 #endif

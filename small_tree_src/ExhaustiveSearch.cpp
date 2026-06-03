@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include "Alignment.hpp"
 #include "ExhaustiveSearch.hpp"
 #include "LikelihoodCalculator.hpp"
@@ -267,7 +268,7 @@ void ExhaustiveSearch::enumerateAllTrees(void) {
     std::cout << "   * [";
     
     size_t cnt = 0, treeCnt = 0;
-    bestLnL = 1.0;
+    bestLnL = std::numeric_limits<double>::lowest();
     TreeCacheMap& tCache = treeCache->getCache();
     for (auto& [key,val] : tCache)
         {
@@ -296,9 +297,7 @@ void ExhaustiveSearch::enumerateAllTrees(void) {
             for (size_t i=0; i<cnt; i++)
                 {
                 double x = calculators[i].getResult();
-                if (bestLnL > 0.0)
-                    bestLnL = x;
-                else if (x > bestLnL)
+                if (x > bestLnL)
                     bestLnL = x;
                 calculators[i].getTreeInfo()->lnLikelihood = x;
                 calculators[i].getTreeInfo()->hasLnLikelihood = true;

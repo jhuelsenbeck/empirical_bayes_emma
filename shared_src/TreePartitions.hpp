@@ -3,7 +3,7 @@
 
 #include <iosfwd>
 #include <map>
-class BitSet;
+#include "BitSet.hpp"
 class Tree;
 
 typedef std::map<BitSet*,uint32_t, CompBitSet> PartitionMap;

@@ -17,6 +17,7 @@ class UserSettings {
         int                     getChainLength(void) { return chainLength; }
         std::string             getInputFileName(void) { return inputFileName; }
         int                     getNumChains(void) { return numChains; }
+        int                     getNumTwists(void) { return numTwists; }
         std::string             getOutputFileName(void) { return outputFileName; }
         int                     getPrintFrequency(void) { return printFrequency; }
         int                     getSampleFrequency(void) { return sampleFrequency; }
@@ -34,6 +35,7 @@ class UserSettings {
         int                     chainLength;
         int                     printFrequency;
         int                     sampleFrequency;
+        int                     numTwists;
         std::string             inputFileName;
         std::string             outputFileName;
         bool                    settingsInitialized;

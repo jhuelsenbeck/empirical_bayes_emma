@@ -18,8 +18,12 @@ std::vector<TreeInfo*>& TreeNeighbors::neighbors(uint64_t treeHash) {
     TreeCacheMap::iterator it = tCache.find(treeHash);
     if (it == tCache.end())
         Msg::error("Could not find tree hash in cache");
+
     Tree* t = new Tree(it->second->compactTree, numTaxa);
-    return neighbors(t);
+    std::vector<TreeInfo*>& nbrs = neighbors(t);
+    delete t;
+
+    return nbrs;
 }
 
 std::vector<TreeInfo*>& TreeNeighbors::neighbors(Tree* t) {

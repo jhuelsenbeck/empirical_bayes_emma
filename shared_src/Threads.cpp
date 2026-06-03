@@ -22,6 +22,9 @@ ThreadPool::ThreadPool(void) :
     threadCount(std::thread::hardware_concurrency()),
     running(true) {
 
+    if (threadCount < 1)
+        threadCount = 1;
+
     threads = new std::thread[threadCount];
     
     // spawn worker threads
