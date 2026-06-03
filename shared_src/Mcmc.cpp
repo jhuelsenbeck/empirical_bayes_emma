@@ -260,7 +260,7 @@ void Mcmc::run(std::string label, double power) {
     TreeInfo* currentInfo = chooseInitialTreeInfo();
     double curLnL = currentInfo->lnLikelihood;
 
-    for (int n=1; n<=numCycles; n++)
+    for (uint32_t n=1; n<=numCycles; n++)
         {
         double forwardProbability = 0.0;
         TreeInfo* newInfo = chooseTreeInfo(currentInfo, forwardProbability);
@@ -321,7 +321,7 @@ void Mcmc::run(std::string label, double power, int numRuns) {
         curLnL[run] = currentInfo[run]->lnLikelihood;
         }
 
-    for (int n=1, nextLogPoint=1; n<=numCycles; n++)
+    for (uint32_t n=1; n<=numCycles; n++)
         {
         for (int run=0; run<numRuns; run++)
             {
@@ -346,11 +346,8 @@ void Mcmc::run(std::string label, double power, int numRuns) {
             samples[run]->sampleTree(currentInfo[run]->hash);
             }
 
-        if (n == nextLogPoint)
-            {
+        if (shouldSample(n) == true)
             writeConvergenceLine(n);
-            nextLogPoint = (nextLogPoint < 100000) ? nextLogPoint * 10 : nextLogPoint + 100000;
-            }
 
         printToScreen(n, curLnL);
         }
@@ -384,7 +381,7 @@ void Mcmc::run(std::string label, double power, int numRuns, int numHeatedChains
     std::vector<std::vector<double>> curLnL(numRuns);
     std::vector<std::vector<TreeInfo*>> currentInfo(numRuns);
     std::vector<std::vector<int>> chainIndex(numRuns);
-    for (int run=0; run<numRuns; run++)
+    for (uint32_t run=0; run<numRuns; run++)
         {
         curLnL[run].resize(numHeatedChains);
         currentInfo[run].resize(numHeatedChains);
@@ -404,10 +401,14 @@ void Mcmc::run(std::string label, double power, int numRuns, int numHeatedChains
         samples[run] = new TreeSamples(treeCache);
         samples[run]->reserve(numCycles);
         }
+        
+    std::vector<std::vector<int>> numAcceptedSwaps(numHeatedChains);
+    for (size_t i=0; i<numHeatedChains; i++)
+        numAcceptedSwaps[i].resize(numHeatedChains,0);
 
     openConvergenceLog((size_t)numRuns);
 
-    for (int n=1, nextLogPoint=1; n<=numCycles; n++)
+    for (int n=1; n<=numCycles; n++)
         {
         for (int run=0; run<numRuns; run++)
             {
@@ -430,6 +431,7 @@ void Mcmc::run(std::string label, double power, int numRuns, int numHeatedChains
                     {
                     currentInfo[run][chain] = newInfo;
                     curLnL[run][chain] = newLnL;
+                    
                     }
                 }
 
@@ -439,31 +441,54 @@ void Mcmc::run(std::string label, double power, int numRuns, int numHeatedChains
             int idx1 = chainIndex[run][idx.second];
             double lnR = (curLnL[run][idx.first]  * heat(idx1, temperature) +
                           curLnL[run][idx.second] * heat(idx0, temperature));
-            lnR -=     (curLnL[run][idx.first]  * heat(idx0, temperature) +
+            lnR -=      (curLnL[run][idx.first]  * heat(idx0, temperature) +
                          curLnL[run][idx.second] * heat(idx1, temperature));
             if (std::log(rng->uniformRv()) < lnR)
                 {
                 chainIndex[run][idx.first] = idx1;
                 chainIndex[run][idx.second] = idx0;
+                numAcceptedSwaps[idx0][idx1]++;
+                numAcceptedSwaps[idx1][idx0]++;
                 }
 
             int coldIdx = coldChainIndex(chainIndex[run]);
             samples[run]->sampleTree(currentInfo[run][coldIdx]->hash);
             }
 
-        if (n == nextLogPoint)
-            {
+        if (shouldSample(n) == true)
             writeConvergenceLine(n);
-            nextLogPoint = (nextLogPoint < 100000) ? nextLogPoint * 10 : nextLogPoint + 100000;
-            }
 
         printToScreen(n, curLnL, chainIndex);
         }
 
     TreeSamples::combinedPrint(samples);
     TreeSamples::compareSamples(samples);
+    
+    // show chain swap acceptance information
+    std::cout << "        ";
+    for (size_t i=0; i<numChains; i++)
+        std::cout << std::setw(4) << i << " ";
+    for (size_t i=0; i<numChains; i++)
+        {
+        std::cout << "     " << std::setw(2) << i << " ";
+        for (size_t j=0; j<numChains; j++)
+            std::cout << std::fixed << std::setprecision(2) << (double)numAcceptedSwaps[i][j] / numCycles << " ";
+        std::cout << std::endl;
+        }
 
     std::cout << std::endl;
+}
+
+bool Mcmc::shouldSample(uint32_t cycle) {
+
+    if (cycle < 10)
+        return true;
+
+    uint64_t p10 = 1;
+    while (p10 * 10 <= cycle)
+        p10 *= 10;
+
+    return (cycle % p10) == 0;
 }
 
 void Mcmc::writeConvergenceLine(int cycle) {

@@ -287,6 +287,7 @@ void TreeSamples::combinedPrint(std::vector<TreeSamples*>& sampleVec) {
         return a.first < b.first;
     });
 
+    std::vector<double> cumulativeProb(sampleVec.size(), 0.0);
     std::cout << "   Tree posterior probabilities:" << std::endl;
     int i = 0;
     for (const auto &e : entries)
@@ -301,6 +302,7 @@ void TreeSamples::combinedPrint(std::vector<TreeSamples*>& sampleVec) {
             double x = 0.0;
             if (it != s->treeCounts.end() && s->numSamples > 0)
                 x = (double)it->second / s->numSamples;
+            cumulativeProb[cnt-1] += x;
             std::cout << std::setprecision(3) << x << " ";
             if (cnt % 10 == 0 && cnt != sampleVec.size())
                 {
@@ -309,6 +311,15 @@ void TreeSamples::combinedPrint(std::vector<TreeSamples*>& sampleVec) {
                 }
             }
         std::cout << std::endl;
+        
+        bool allGreater = true;
+        for (size_t k=0; k<cumulativeProb.size(); k++)
+            {
+            if (cumulativeProb[k] <=0.999)
+                allGreater = false;
+            }
+        if (allGreater == true)
+            break;
         }
     std::cout << std::endl;
 }

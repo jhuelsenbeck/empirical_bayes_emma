@@ -41,6 +41,7 @@ class Mcmc {
         void                        printToScreen(int n, std::vector<double>& curLnL);
         void                        printToScreen(int n, std::vector<std::vector<double>>& curLnL, std::vector<std::vector<int>>& indices);
         void                        returnCalculator(LikelihoodCalculator* calculator);
+        bool                        shouldSample(uint32_t cycle);
         void                        writeConvergenceLine(int cycle);
 
         RandomVariable*             rng;

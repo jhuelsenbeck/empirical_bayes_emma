@@ -32,7 +32,7 @@ int main(int argc, char* argv[]) {
     settings.print();
     
     // read the alignment file
-    int numTaxa = 10;
+    int numTaxa = 8;
     Alignment* originalAlignment = new Alignment(settings.getInputFileName());
     Alignment* data = originalAlignment;
     if (originalAlignment->getNumTaxa() > numTaxa)
