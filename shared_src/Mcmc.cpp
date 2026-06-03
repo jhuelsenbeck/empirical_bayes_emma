@@ -93,6 +93,49 @@ TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbabilit
     return neighbors.back();
 }
 
+TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbability, int n) {
+
+    if (currentInfo == nullptr)
+        Msg::error("Current tree is null in Mcmc::chooseTreeInfo");
+        
+    if (n == 0)
+        return chooseTreeInfo(currentInfo, proposalProbability);
+
+    std::vector<TreeInfo*>& neighbors = currentInfo->neighbors;
+    std::vector<double>& probs = currentInfo->neighborProposalProbabilities;
+
+    if (neighbors.empty() == true)
+        Msg::error("Current tree has no neighbors");
+    if (neighbors.size() != probs.size())
+        Msg::error("Neighbor vector and proposal probability vector differ in size");
+    if (n > neighbors.size())
+        n = (int)neighbors.size();
+        
+    // choose subset of trees randomly
+    subsetIndices.clear();
+    while(subsetIndices.size() < n)
+        subsetIndices.insert((int)(rng->uniformRv()*neighbors.size()));
+    double totalProb = 0.0;
+    for (const int& idx : subsetIndices)
+        totalProb += probs[idx];
+
+    double u = rng->uniformRv() * totalProb;
+    double sum = 0.0;
+    for (const int& idx : subsetIndices)
+        {
+        sum += probs[idx];
+        if (u < sum)
+            {
+            proposalProbability = probs[idx] / totalProb;
+            return neighbors[idx];
+            }
+        }
+
+    // Numerical roundoff can leave sum infinitesimally below one. Fall back to
+    // the last neighbor instead of returning null.
+    return neighbors[*subsetIndices.rbegin()];
+}
+
 double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash) {
 
     if (fromInfo == nullptr)
@@ -110,8 +153,51 @@ double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash) {
             return probs[i];
         }
 
+    std::cout << "neighbors.size()=" << neighbors.size() << std::endl;
     Msg::error("Could not find reverse tree in neighbor list");
     return 0.0;
+}
+
+double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash, int n) {
+
+    if (fromInfo == nullptr)
+        Msg::error("Null source tree in Mcmc::findTreeProbability");
+        
+    if (n == 0)
+        return findTreeProbability(fromInfo, toHash);
+
+    std::vector<TreeInfo*>& neighbors = fromInfo->neighbors;
+    std::vector<double>& probs = fromInfo->neighborProposalProbabilities;
+
+    if (neighbors.size() != probs.size())
+        Msg::error("Neighbor vector and proposal probability vector differ in size");
+    if (n > neighbors.size())
+        n = (int)neighbors.size();
+
+    // put the index of fromInfo tree into the subset
+    subsetIndices.clear();
+    int toIdx = -1;
+    for (int i=0; i<neighbors.size(); i++)
+        {
+        if (neighbors[i]->hash == toHash)
+            {
+            subsetIndices.insert(i);
+            toIdx = i;
+            break;
+            }
+        }
+    if (toIdx == -1)
+        Msg::error("Could not find tree for random subset");
+        
+    // add more random trees
+    while(subsetIndices.size() < n)
+        subsetIndices.insert((int)(rng->uniformRv()*neighbors.size()));
+    double totalProb = 0.0;
+    for (const int& idx : subsetIndices)
+        totalProb += probs[idx];
+        
+    // return the probability of choosing that specific tree
+    return probs[toIdx] / totalProb;
 }
 
 int Mcmc::coldChainIndex(std::vector<int>& chainIndices) {
@@ -245,7 +331,7 @@ void Mcmc::returnCalculator(LikelihoodCalculator* calculator) {
     calculatorPool.push_back(calculator);
 }
 
-void Mcmc::run(std::string label, double power) {
+void Mcmc::run(std::string label, double power, int nNeighbors) {
 
     std::cout << "   " << label << std::endl;
 
@@ -263,11 +349,11 @@ void Mcmc::run(std::string label, double power) {
     for (uint32_t n=1; n<=numCycles; n++)
         {
         double forwardProbability = 0.0;
-        TreeInfo* newInfo = chooseTreeInfo(currentInfo, forwardProbability);
+        TreeInfo* newInfo = chooseTreeInfo(currentInfo, forwardProbability, nNeighbors);
         if (newInfo == nullptr)
             Msg::error("New tree is null");
 
-        double reverseProbability = findTreeProbability(newInfo, currentInfo->hash);
+        double reverseProbability = findTreeProbability(newInfo, currentInfo->hash, nNeighbors);
 
         double newLnL = newInfo->lnLikelihood;
         double lnLikelihoodRatio = newLnL - curLnL;
@@ -288,7 +374,7 @@ void Mcmc::run(std::string label, double power) {
     std::cout << std::endl;
 }
 
-void Mcmc::run(std::string label, double power, int numRuns) {
+void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns) {
 
     if (numRuns < 2)
         Msg::error("Expecting at least two runs for this chain");
@@ -326,11 +412,11 @@ void Mcmc::run(std::string label, double power, int numRuns) {
         for (int run=0; run<numRuns; run++)
             {
             double forwardProbability = 0.0;
-            TreeInfo* newInfo = chooseTreeInfo(currentInfo[run], forwardProbability);
+            TreeInfo* newInfo = chooseTreeInfo(currentInfo[run], forwardProbability, nNeighbors);
             if (newInfo == nullptr)
                 Msg::error("New tree is null");
 
-            double reverseProbability = findTreeProbability(newInfo, currentInfo[run]->hash);
+            double reverseProbability = findTreeProbability(newInfo, currentInfo[run]->hash, nNeighbors);
 
             double newLnL = newInfo->lnLikelihood;
             double lnLikelihoodRatio = newLnL - curLnL[run];
@@ -359,7 +445,7 @@ void Mcmc::run(std::string label, double power, int numRuns) {
     std::cout << std::endl;
 }
 
-void Mcmc::run(std::string label, double power, int numRuns, int numHeatedChains) {
+void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns, int numHeatedChains) {
 
     if (numRuns < 1)
         Msg::error("Expecting at least one run");
@@ -415,11 +501,11 @@ void Mcmc::run(std::string label, double power, int numRuns, int numHeatedChains
             for (int chain=0; chain<numHeatedChains; chain++)
                 {
                 double forwardProbability = 0.0;
-                TreeInfo* newInfo = chooseTreeInfo(currentInfo[run][chain], forwardProbability);
+                TreeInfo* newInfo = chooseTreeInfo(currentInfo[run][chain], forwardProbability, nNeighbors);
                 if (newInfo == nullptr)
                     Msg::error("New tree is null");
 
-                double reverseProbability = findTreeProbability(newInfo, currentInfo[run][chain]->hash);
+                double reverseProbability = findTreeProbability(newInfo, currentInfo[run][chain]->hash, nNeighbors);
 
                 double beta = heat(chainIndex[run][chain], temperature);
                 double newLnL = newInfo->lnLikelihood;

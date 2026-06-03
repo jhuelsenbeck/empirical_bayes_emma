@@ -38,6 +38,7 @@ TreeSpace::TreeSpace(TreeCache* tc, std::string st) : treeCache(tc), swapType(st
     std::cout << "]" << std::endl;
     std::cout << "   * [";
 
+    averageDegree = 0.0;
     for (auto& [key,val] : tCache)
         {
         TreeSpaceNode* thisTree = getTree(key);
@@ -48,6 +49,8 @@ TreeSpace::TreeSpace(TreeCache* tc, std::string st) : treeCache(tc), swapType(st
             neighboringTree->neighbors.insert(thisTree);
             thisTree->neighbors.insert(neighboringTree);
             }
+            
+        averageDegree += thisTree->neighbors.size();
 
         treeCnt++;
 
@@ -58,6 +61,7 @@ TreeSpace::TreeSpace(TreeCache* tc, std::string st) : treeCache(tc), swapType(st
             std::cout << "*" << std::flush;
         numAsterices = filledWidth;
         }
+    averageDegree /= tCache.size();
 
     std::cout << "]" << std::endl << std::endl;        
        
@@ -206,6 +210,7 @@ void TreeSpace::characterize(void) {
     
     std::cout << "   Tree space characteristics (" << swapType << "):" << std::endl;
     std::cout << "   * Number of vertices       = " << treeNodes.size() << std::endl;
+    std::cout << "   * Average degree           = " << averageDegree << std::endl;
     std::cout << "   * Largest basin fraction   = " << bMax << std::endl;
     std::cout << "   * Peak mass entropy        = " << peakMassEntropy << std::endl;
     std::cout << "   * Expected number of peaks = " << std::exp(peakMassEntropy) << std::endl;

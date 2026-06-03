@@ -140,6 +140,7 @@ class TreeSpace {
         PeakMap                 peaks;
         TreeProbMap             treeProbabilities;
         std::string             swapType;
+        double                  averageDegree;
 };
 
 #endif

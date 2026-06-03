@@ -32,7 +32,7 @@ int main(int argc, char* argv[]) {
     settings.print();
     
     // read the alignment file
-    int numTaxa = 8;
+    int numTaxa = 10;
     Alignment* originalAlignment = new Alignment(settings.getInputFileName());
     Alignment* data = originalAlignment;
     if (originalAlignment->getNumTaxa() > numTaxa)
@@ -53,6 +53,13 @@ int main(int argc, char* argv[]) {
     TreeNeighborGeneratorNNI treeNeighborGeneratorNni(&treeCacheNni);
     TreeNeighbors treeNeighborsNni(&treeCacheNni, &treeNeighborGeneratorNni, data->getNumTaxa());
     generateNeighbors(treeCacheNni, treeNeighborsNni, "NNI");
+    
+    // generate the NNi of the NNI neighbors for each tree
+    TreeCache treeCacheNni2;
+    treeCacheNni2.injectTreesAndLikelihoods(&treeCacheNni);
+    TreeNeighborGeneratorNNI2 treeNeighborGeneratorNni2(&treeCacheNni2, &treeCacheNni);
+    TreeNeighbors treeNeighborsNni2(&treeCacheNni2, &treeNeighborGeneratorNni2, data->getNumTaxa());
+    generateNeighbors(treeCacheNni2, treeNeighborsNni2, "NNI2");
         
     // generate the TBR neighbors for each tree
     TreeCache treeCacheTbr;
@@ -61,36 +68,48 @@ int main(int argc, char* argv[]) {
     TreeNeighbors treeNeighborsTbr(&treeCacheTbr, &treeNeighborGeneratorTbr, data->getNumTaxa());
     generateNeighbors(treeCacheTbr, treeNeighborsTbr, "TBR");
     
-    // determine the tree landscapes for NNI and TBR
+    // determine the tree landscapes for NNI, NNI2, and TBR
     TreeSpace treeSpaceNni(&treeCacheNni, "NNI");
     treeSpaceNni.characterize();
     treeSpaceNni.printPosterior();
     treeSpaceNni.printPosterior(settings.getOutputFileName() + ".true");
+    TreeSpace treeSpaceNni2(&treeCacheNni2, "NNI2");
+    treeSpaceNni2.characterize();
     TreeSpace treeSpaceTbr(&treeCacheTbr, "TBR");
     treeSpaceTbr.characterize();
     treeSpaceNni.writeRuggednessStatistics(settings.getOutputFileName() + ".nni.ruggedness.tsv");
+    treeSpaceNni2.writeRuggednessStatistics(settings.getOutputFileName() + ".nni2.ruggedness.tsv");
     treeSpaceTbr.writeRuggednessStatistics(settings.getOutputFileName() + ".tbr.ruggedness.tsv");
         
-    // Markov chain Monte Carlo exploration of tree space
-    std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5 };
-    std::vector<TreeCache*> treeCache = { &treeCacheNni, &treeCacheTbr };
-    std::vector<TreeNeighbors*> treeNeighbors = { &treeNeighborsNni, &treeNeighborsTbr };
-    std::vector<std::string> swapName = { "nni", "tbr" };
+    // Markov chain Monte Carlo exploration of tree space    
     int nReps = 100;
-    for (int swapType=0; swapType<2; swapType++)
+    std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5 };
+    for (double power : powers)
         {
-        for (double power : powers)
-            {
-            std::string convergenceFileName = ".conv_" + swapName[swapType] + "_" + std::to_string(power);
-            std::string label = "MCMC (" + swapName[swapType] + ", " + std::to_string(power) + ")";
-            Mcmc mcmc(&rng, &threads, treeCache[swapType], &treeLikelihoods, treeNeighbors[swapType], data, true, convergenceFileName);
-            mcmc.run(label, power, nReps);
-            
-            convergenceFileName = ".conv_mc3_" + swapName[swapType] + "_" + std::to_string(power);
-            label = "MCMCMC (" + swapName[swapType] + ", " + std::to_string(power) + ")";
-            Mcmc mcmcmc(&rng, &threads, treeCache[swapType], &treeLikelihoods, treeNeighbors[swapType], data, true, convergenceFileName);
-            mcmcmc.run(label, power, nReps, 4);
-            }
+        std::string convergenceFileName = ".conv_NNI_" + std::to_string(power);
+        std::string label = "MCMC (NNI, " + std::to_string(power) + ")";
+        Mcmc mcmc1(&rng, &threads, &treeCacheNni, &treeLikelihoods, &treeNeighborsNni, data, true, convergenceFileName);
+        mcmc1.run(label, power, 0, nReps);
+
+        convergenceFileName = ".conv_NNI2_" + std::to_string(power);
+        label = "MCMC (NNI2, " + std::to_string(power) + ")";
+        Mcmc mcmc2(&rng, &threads, &treeCacheNni2, &treeLikelihoods, &treeNeighborsNni2, data, true, convergenceFileName);
+        mcmc2.run(label, power, 0, nReps);
+        
+        convergenceFileName = ".conv_TBR_" + std::to_string(power);
+        label = "MCMC (TBR, " + std::to_string(power) + ")";
+        Mcmc mcmc3(&rng, &threads, &treeCacheTbr, &treeLikelihoods, &treeNeighborsTbr, data, true, convergenceFileName);
+        mcmc3.run(label, power, 0, nReps);
+        
+        convergenceFileName = ".conv_rTBR_" + std::to_string(power);
+        label = "MCMC (rTBR, " + std::to_string(power) + ")";
+        Mcmc mcmc4(&rng, &threads, &treeCacheTbr, &treeLikelihoods, &treeNeighborsTbr, data, true, convergenceFileName);
+        mcmc4.run(label, power, 2*(data->getNumTaxa()-1), nReps);
+        
+        convergenceFileName = ".conv_mc3_NNI_" + std::to_string(power);
+        label = "MCMCMC (NNI, " + std::to_string(power) + ")";
+        Mcmc mcmcmc(&rng, &threads, &treeCacheNni, &treeLikelihoods, &treeNeighborsNni, data, true, convergenceFileName);
+        mcmcmc.run(label, power, 0, nReps, 4);
         }
     
     // clean up
@@ -142,6 +161,21 @@ void generateNeighbors(TreeCache& treeCache, TreeNeighbors& treeNeighbors, std::
         }
 
     std::cout << "]" << std::endl << std::endl;
+    
+#   if 0
+    int num = 0, sum = 0, min=(int)cache.size() + 1, max=0;
+    for (auto& [key,val] : cache)
+        {
+        num++;
+        int x = (int)val->neighbors.size();
+        if (x < min) 
+            min = x;
+        if (x > max)
+            max = x;
+        sum += x;
+        }
+    std::cout << "Average number of neighbors = " << (double)sum / num << " (" << min << " " << max << ")" << std::endl;
+#   endif
 }
 
 void printHeader(void) {

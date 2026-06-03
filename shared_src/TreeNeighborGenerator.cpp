@@ -1,3 +1,4 @@
+#include <set>
 #include "Msg.hpp"
 #include "Node.hpp"
 #include "Tree.hpp"
@@ -131,9 +132,49 @@ void TreeNeighborGeneratorNNI::generateNeighbors(Tree* tree, std::vector<TreeInf
         }
 }
 
-void TreeNeighborGeneratorNNI::generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable*) {
+TreeNeighborGeneratorNNI2::TreeNeighborGeneratorNNI2(TreeCache* tc, TreeCache* nniTc) : TreeNeighborGenerator(tc), nniTreeCache(nniTc) {
 
-    generateNeighbors(tree, neighbors);
+}
+
+void TreeNeighborGeneratorNNI2::generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors) {
+
+    generateNeighbors(tree->getHash(), neighbors);
+}
+
+void TreeNeighborGeneratorNNI2::generateNeighbors(uint64_t treeHash, std::vector<TreeInfo*>& neighbors) {
+
+    // get the degree one neighbors
+    TreeInfo* info = nniTreeCache->getTreeInfo(treeHash);
+    if (info == nullptr)
+        Msg::error("Tree info could not be found in TreeNeighborGeneratorNNI2");
+    std::vector<TreeInfo*>& degreeOneNeighbors = info->neighbors;;
+    if (degreeOneNeighbors.size() == 0)
+        Msg::error("No neighbors found in TreeNeighborGeneratorNNI2");
+        
+    // find all degree one and degree two neighbors
+    std::set<TreeInfo*> uniqueNeighbors;
+    for (TreeInfo*& nbr1 : degreeOneNeighbors)
+        {
+        uniqueNeighbors.insert(nbr1);
+        
+        TreeInfo* nbrInfo = nniTreeCache->getTreeInfo(nbr1->hash);
+        std::vector<TreeInfo*>& degreeTwoNeighbors = nbrInfo->neighbors;
+        for (TreeInfo*& nbr2 : degreeTwoNeighbors)
+            {
+            if (nbr2 != info)
+                uniqueNeighbors.insert(nbr2);
+            }
+        }
+
+    // add them to the neighbors vector
+    neighbors.reserve(uniqueNeighbors.size());
+    for (TreeInfo* nbr : uniqueNeighbors)
+        {
+        TreeInfo* ti = treeCache->getTreeInfo(nbr->hash);
+        if (ti == nullptr)
+            Msg::error("Could not find tree in cache for NNI2");
+        neighbors.push_back(ti);
+        }
 }
 
 TreeNeighborGeneratorTBR::TreeNeighborGeneratorTBR(TreeCache* tc) : TreeNeighborGenerator(tc) {
@@ -202,16 +243,7 @@ void TreeNeighborGeneratorTBR::generateNeighbors(Tree* tree, std::vector<TreeInf
 
 }
 
-void TreeNeighborGeneratorTBR::generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable*) {
-
-    generateNeighbors(tree, neighbors);
-}
-
 TreeNeighborGeneratorRandomTBR::TreeNeighborGeneratorRandomTBR(TreeCache* tc) : TreeNeighborGenerator(tc) {
-
-}
-
-void TreeNeighborGeneratorRandomTBR::generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable* rng) {
 
 }
 

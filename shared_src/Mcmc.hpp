@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,18 +23,19 @@ class Mcmc {
     public:
                                     Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a, bool tf=false, std::string cfn="");
                                    ~Mcmc(void);
-
-        void                        run(std::string label, double power);
-        void                        run(std::string label, double power, int numRuns);
-        void                        run(std::string label, double power, int numRuns, int numHeatedChains);
+        void                        run(std::string label, double power, int nNeighbors);
+        void                        run(std::string label, double power, int nNeighbors, int numRuns);
+        void                        run(std::string label, double power, int nNeighbors, int numRuns, int numHeatedChains);
 
     private:
         std::pair<int,int>          chooseChains(int numChains);
         TreeInfo*                   chooseInitialTreeInfo(void);
         TreeInfo*                   chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbability);
+        TreeInfo*                   chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbability, int n);
         int                         coldChainIndex(std::vector<int>& chainIndices);
         void                        deleteSamplesAndPartitions(void);
         double                      findTreeProbability(TreeInfo* fromInfo, uint64_t toHash);
+        double                      findTreeProbability(TreeInfo* fromInfo, uint64_t toHash, int n);
         LikelihoodCalculator*       getCalculator(void);
         double                      heat(int i, double temperature);
         void                        openConvergenceLog(size_t numReplicates);
@@ -61,6 +63,7 @@ class Mcmc {
         std::ofstream               convergenceLog;
         std::vector<TreeSamples*>   samples;
         std::vector<TreePartitions*> partitions;
+        std::set<int>               subsetIndices;
 
         std::vector<LikelihoodCalculator*> allocatedCalculators;
         std::vector<LikelihoodCalculator*> calculatorPool;

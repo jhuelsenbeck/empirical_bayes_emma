@@ -3,7 +3,6 @@
 
 #include <vector>
 #include "TreeCache.hpp"
-class RandomVariable;
 class Tree;
 struct TreeInfo;
 
@@ -16,7 +15,6 @@ class TreeNeighborGenerator {
                         TreeNeighborGenerator(TreeCache* tc);
         bool            checkTree(Tree* t);
         virtual void    generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors) = 0;
-        virtual void    generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable* rng) = 0;
     
     protected:
         TreeCache*      treeCache;
@@ -28,7 +26,18 @@ class TreeNeighborGeneratorNNI : public TreeNeighborGenerator {
                         TreeNeighborGeneratorNNI(void) = delete;
                         TreeNeighborGeneratorNNI(TreeCache* tc);
         void            generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors);
-        void            generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable*);
+};
+
+class TreeNeighborGeneratorNNI2 : public TreeNeighborGenerator {
+
+    public:
+                        TreeNeighborGeneratorNNI2(void) = delete;
+                        TreeNeighborGeneratorNNI2(TreeCache* tc, TreeCache* nniTc);
+        void            generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors);
+        void            generateNeighbors(uint64_t treeHash, std::vector<TreeInfo*>& neighbors);
+        
+    private:
+        TreeCache*      nniTreeCache;
 };
 
 class TreeNeighborGeneratorTBR : public TreeNeighborGenerator {
@@ -37,7 +46,6 @@ class TreeNeighborGeneratorTBR : public TreeNeighborGenerator {
                         TreeNeighborGeneratorTBR(void) = delete;
                         TreeNeighborGeneratorTBR(TreeCache* tc);
         void            generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors);
-        void            generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable*);
 };
 
 class TreeNeighborGeneratorRandomTBR : public TreeNeighborGenerator {
@@ -46,7 +54,6 @@ class TreeNeighborGeneratorRandomTBR : public TreeNeighborGenerator {
                         TreeNeighborGeneratorRandomTBR(void) = delete;
                         TreeNeighborGeneratorRandomTBR(TreeCache* tc);
         void            generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors);
-        void            generateNeighbors(Tree* tree, std::vector<TreeInfo*>& neighbors, RandomVariable* rng);
 };
 
 #endif
