@@ -88,27 +88,27 @@ int main(int argc, char* argv[]) {
         {
         std::string convergenceFileName = ".conv_NNI_" + std::to_string(power);
         std::string label = "MCMC (NNI, " + std::to_string(power) + ")";
-        Mcmc mcmc1(&rng, &threads, &treeCacheNni, &treeLikelihoods, &treeNeighborsNni, data, true, convergenceFileName);
+        Mcmc mcmc1(&rng, &treeCacheNni, data, true, convergenceFileName);
         mcmc1.run(label, power, 0, nReps);
 
         convergenceFileName = ".conv_NNI2_" + std::to_string(power);
         label = "MCMC (NNI2, " + std::to_string(power) + ")";
-        Mcmc mcmc2(&rng, &threads, &treeCacheNni2, &treeLikelihoods, &treeNeighborsNni2, data, true, convergenceFileName);
+        Mcmc mcmc2(&rng, &treeCacheNni2, data, true, convergenceFileName);
         mcmc2.run(label, power, 0, nReps);
         
         convergenceFileName = ".conv_TBR_" + std::to_string(power);
         label = "MCMC (TBR, " + std::to_string(power) + ")";
-        Mcmc mcmc3(&rng, &threads, &treeCacheTbr, &treeLikelihoods, &treeNeighborsTbr, data, true, convergenceFileName);
+        Mcmc mcmc3(&rng, &treeCacheTbr, data, true, convergenceFileName);
         mcmc3.run(label, power, 0, nReps);
         
         convergenceFileName = ".conv_rTBR_" + std::to_string(power);
         label = "MCMC (rTBR, " + std::to_string(power) + ")";
-        Mcmc mcmc4(&rng, &threads, &treeCacheTbr, &treeLikelihoods, &treeNeighborsTbr, data, true, convergenceFileName);
+        Mcmc mcmc4(&rng, &treeCacheTbr, data, true, convergenceFileName);
         mcmc4.run(label, power, 2*(data->getNumTaxa()-1), nReps);
         
         convergenceFileName = ".conv_mc3_NNI_" + std::to_string(power);
         label = "MCMCMC (NNI, " + std::to_string(power) + ")";
-        Mcmc mcmcmc(&rng, &threads, &treeCacheNni, &treeLikelihoods, &treeNeighborsNni, data, true, convergenceFileName);
+        Mcmc mcmcmc(&rng, &treeCacheNni, data, true, convergenceFileName);
         mcmcmc.run(label, power, 0, nReps, 4);
         }
     

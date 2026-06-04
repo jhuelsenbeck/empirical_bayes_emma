@@ -16,7 +16,6 @@ class UserSettings {
         double                  getBurnin(void) { return burnin; }
         int                     getChainLength(void) { return chainLength; }
         std::string             getInputFileName(void) { return inputFileName; }
-        int                     getNumChains(void) { return numChains; }
         int                     getNumTwists(void) { return numTwists; }
         std::string             getOutputFileName(void) { return outputFileName; }
         int                     getPrintFrequency(void) { return printFrequency; }
@@ -31,7 +30,6 @@ class UserSettings {
         void                    usage(void);
         double                  burnin;
         double                  temperature;
-        int                     numChains;
         int                     chainLength;
         int                     printFrequency;
         int                     sampleFrequency;

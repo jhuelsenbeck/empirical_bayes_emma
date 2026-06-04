@@ -12,7 +12,6 @@ UserSettings::UserSettings(void) {
 
     executableName = "";
     settingsInitialized = false;
-    numChains = 1;
     temperature = 0.2;
     chainLength = 1000000;
     printFrequency = 100;
@@ -66,8 +65,6 @@ void UserSettings::readSettings(int argc, char* argv[]) {
                 outputFileName = cmd;
             else if (key == "-n")
                 chainLength = stod(cmd);
-            else if (key == "-m")
-                numChains = stod(cmd);
             else if (key == "-t")
                 temperature = stof(cmd);
             else if (key == "-d")
@@ -92,7 +89,6 @@ void UserSettings::print(void) {
     std::cout << "   User settings:" << std::endl;
     std::cout << "   * Input file name (-i)            = " << inputFileName << std::endl;
     std::cout << "   * Output file name (-o)           = " << outputFileName << std::endl;
-    std::cout << "   * Number of chains (-m)           = " << numChains << std::endl;
     std::cout << "   * Temperature (-t)                = " << temperature << std::endl;
     std::cout << "   * Chain length (-n)               = " << chainLength << std::endl;
     std::cout << "   * Burn in fraction (-d)           = " << burnin << std::endl;
@@ -106,7 +102,6 @@ void UserSettings::usage(void) {
 
     std::cout << "-i        Input sequence file name" << std::endl;
     std::cout << "-o        Output file name" << std::endl;
-    std::cout << "-m        Number of chains for MCMCMC" << std::endl;
     std::cout << "-t        Temperature parameter for MCMCMC" << std::endl;
     std::cout << "-n        MCMC chain length" << std::endl;
     std::cout << "-d        MCMC burn-in fraction" << std::endl;

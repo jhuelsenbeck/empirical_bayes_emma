@@ -13,15 +13,12 @@
 class Alignment;
 class LikelihoodCalculator;
 class RandomVariable;
-class TreeLikelihoods;
-class TreeNeighbors;
-class TreePartitions;
 class TreeSamples;
 
 class Mcmc {
 
     public:
-                                    Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a, bool tf=false, std::string cfn="");
+                                    Mcmc(RandomVariable* r, TreeCache* tc, Alignment* a, bool tf=false, std::string cfn="");
                                    ~Mcmc(void);
         void                        run(std::string label, double power, int nNeighbors);
         void                        run(std::string label, double power, int nNeighbors, int numRuns);
@@ -47,11 +44,8 @@ class Mcmc {
         void                        writeConvergenceLine(int cycle);
 
         RandomVariable*             rng;
-        ThreadPool*                 threadPool;
         Alignment*                  alignment;
         TreeCache*                  treeCache;
-        TreeLikelihoods*            treeLikelihoods;
-        TreeNeighbors*              treeNeighbors;
         bool                        expandedOutput;
         std::string                 convergenceLogFileName;
         int                         numChains;
@@ -62,7 +56,6 @@ class Mcmc {
 
         std::ofstream               convergenceLog;
         std::vector<TreeSamples*>   samples;
-        std::vector<TreePartitions*> partitions;
         std::set<int>               subsetIndices;
 
         std::vector<LikelihoodCalculator*> allocatedCalculators;

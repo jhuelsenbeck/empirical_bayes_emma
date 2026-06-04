@@ -255,7 +255,7 @@ void ExhaustiveSearch::enumerateAllTrees(void) {
         
     // calculate the maximum likelihood for each tree in treeList
     int barWidth = 60, numAsterices = 0;
-    std::cout << "   Maximum likelihood estimation for all trees:" << std::endl;
+    std::cout << "   Finding maximum likelihood values for all " << treeCache->size() << " trees:" << std::endl;
     std::cout << "   * [";
     for (int i=0; i<barWidth; i++) 
         {

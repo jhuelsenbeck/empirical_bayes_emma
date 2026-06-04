@@ -10,19 +10,15 @@
 #include "RandomVariable.hpp"
 #include "TreeCache.hpp"
 #include "TreeConvergenceDiagnostics.hpp"
-#include "TreeLikelihoods.hpp"
-#include "TreeNeighbors.hpp"
-#include "TreePartitions.hpp"
 #include "TreeSamples.hpp"
 #include "UserSettings.hpp"
 
 
 
-Mcmc::Mcmc(RandomVariable* r, ThreadPool* p, TreeCache* tc, TreeLikelihoods* tl, TreeNeighbors* tn, Alignment* a, bool tf, std::string cfn) :
-    rng(r), threadPool(p), alignment(a), treeCache(tc), treeLikelihoods(tl), treeNeighbors(tn), expandedOutput(tf), convergenceLogFileName(cfn) {
+Mcmc::Mcmc(RandomVariable* r, TreeCache* tc, Alignment* a, bool tf, std::string cfn) :
+    rng(r), alignment(a), treeCache(tc), expandedOutput(tf), convergenceLogFileName(cfn) {
 
     UserSettings& settings = UserSettings::userSettings();
-    numChains       = settings.getNumChains();
     temperature     = settings.getTemperature();
     numCycles       = settings.getChainLength();
     printFrequency  = settings.getPrintFrequency();
@@ -218,10 +214,7 @@ void Mcmc::deleteSamplesAndPartitions(void) {
 
     for (TreeSamples* s : samples)
         delete s;
-    for (TreePartitions* p : partitions)
-        delete p;
     samples.clear();
-    partitions.clear();
 }
 
 LikelihoodCalculator* Mcmc::getCalculator(void) {
@@ -517,7 +510,6 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns, int
                     {
                     currentInfo[run][chain] = newInfo;
                     curLnL[run][chain] = newLnL;
-                    
                     }
                 }
 
