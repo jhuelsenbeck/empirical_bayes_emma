@@ -48,7 +48,6 @@ class Mcmc {
         TreeCache*                  treeCache;
         bool                        expandedOutput;
         std::string                 convergenceLogFileName;
-        int                         numChains;
         double                      temperature;
         int                         numCycles;
         int                         printFrequency;

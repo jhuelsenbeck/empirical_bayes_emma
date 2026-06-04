@@ -481,9 +481,13 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns, int
         samples[run]->reserve(numCycles);
         }
         
+    std::vector<std::vector<int>> numAttemptedSwaps(numHeatedChains);
     std::vector<std::vector<int>> numAcceptedSwaps(numHeatedChains);
     for (size_t i=0; i<numHeatedChains; i++)
+        {
+        numAttemptedSwaps[i].resize(numHeatedChains,0);
         numAcceptedSwaps[i].resize(numHeatedChains,0);
+        }
 
     openConvergenceLog((size_t)numRuns);
 
@@ -528,6 +532,8 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns, int
                 numAcceptedSwaps[idx0][idx1]++;
                 numAcceptedSwaps[idx1][idx0]++;
                 }
+            numAttemptedSwaps[idx0][idx1]++;
+            numAttemptedSwaps[idx1][idx0]++;            
 
             int coldIdx = coldChainIndex(chainIndex[run]);
             samples[run]->sampleTree(currentInfo[run][coldIdx]->hash);
@@ -544,13 +550,14 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns, int
     
     // show chain swap acceptance information
     std::cout << "        ";
-    for (size_t i=0; i<numChains; i++)
+    for (size_t i=0; i<numHeatedChains; i++)
         std::cout << std::setw(4) << i << " ";
-    for (size_t i=0; i<numChains; i++)
+    std::cout << std::endl;
+    for (size_t i=0; i<numHeatedChains; i++)
         {
         std::cout << "     " << std::setw(2) << i << " ";
-        for (size_t j=0; j<numChains; j++)
-            std::cout << std::fixed << std::setprecision(2) << (double)numAcceptedSwaps[i][j] / numCycles << " ";
+        for (size_t j=0; j<numHeatedChains; j++)
+            std::cout << std::fixed << std::setprecision(2) << (double)numAcceptedSwaps[i][j] / numAttemptedSwaps[i][j] << " ";
         std::cout << std::endl;
         }
 

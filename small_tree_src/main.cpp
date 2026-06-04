@@ -30,9 +30,10 @@ int main(int argc, char* argv[]) {
     UserSettings& settings = UserSettings::userSettings();
     settings.readSettings(argc, argv);
     settings.print();
+    int numTaxa = 9;
+    int nReps = 50;
     
     // read the alignment file
-    int numTaxa = 10;
     Alignment* originalAlignment = new Alignment(settings.getInputFileName());
     Alignment* data = originalAlignment;
     if (originalAlignment->getNumTaxa() > numTaxa)
@@ -82,7 +83,6 @@ int main(int argc, char* argv[]) {
     treeSpaceTbr.writeRuggednessStatistics(settings.getOutputFileName() + ".tbr.ruggedness.tsv");
         
     // Markov chain Monte Carlo exploration of tree space    
-    int nReps = 100;
     std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5 };
     for (double power : powers)
         {
