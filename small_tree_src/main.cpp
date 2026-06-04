@@ -104,7 +104,7 @@ int main(int argc, char* argv[]) {
         convergenceFileName = ".conv_rTBR_" + std::to_string(power);
         label = "MCMC (rTBR, " + std::to_string(power) + ")";
         Mcmc mcmc4(&rng, &treeCacheTbr, data, true, convergenceFileName);
-        mcmc4.run(label, power, 2*(data->getNumTaxa()-1), nReps);
+        mcmc4.run(label, power, 2*(data->getNumTaxa()-3), nReps);
         
         convergenceFileName = ".conv_mc3_NNI_" + std::to_string(power);
         label = "MCMCMC (NNI, " + std::to_string(power) + ")";
