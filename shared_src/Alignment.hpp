@@ -23,6 +23,7 @@ class Alignment {
         int&                                        operator()(size_t r, size_t c) { return this->matrix[r][c]; }
         const int&                                  operator()(size_t r, size_t c) const { return this->matrix[r][c]; }
         void                                        compress(void);
+        void                                        concatenateTwist(RandomVariable* rng, int nTrees);
         int                                         getNumTaxa(void) { return numTaxa; }
         int                                         getNumSites(void) { return numSites; }
         int                                         getNumStates(void) { return 4; }

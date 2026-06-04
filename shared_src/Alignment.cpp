@@ -330,6 +330,59 @@ void Alignment::compress(void) {
     isCompressed = true;
 }
 
+void Alignment::concatenateTwist(RandomVariable* rng, int nTrees) {
+
+    if (isCompressed == true)
+        Msg::error("Cannot permute a compressed alignment");
+        
+    if (nTrees < 2)
+        return;
+            
+    std::vector<std::vector<int>> twistMap(nTrees);
+    for (int n=0; n<nTrees; n++)
+        {
+        twistMap[n].resize(numTaxa);
+        
+        std::vector<int> vals;
+        vals.clear();
+        for (int i=0; i<numTaxa; i++)
+            vals.push_back(i);
+
+        for (size_t i=0; i<numTaxa; i++)
+            {
+            int whichElement = (int)(rng->uniformRv()*vals.size());
+            twistMap[n][i] = vals[whichElement];
+            vals[whichElement] = vals[vals.size()-1];
+            vals.pop_back();
+            }
+        }
+    int newNumSites = numSites * nTrees;
+        
+    int** tempMatrix = new int*[numTaxa];
+    tempMatrix[0] = new int[numTaxa * newNumSites];
+    for (size_t i=1; i<numTaxa; i++)
+        tempMatrix[i] = tempMatrix[i-1] + newNumSites;
+    for (size_t i=0; i<numTaxa; i++)
+        for (size_t j=0; j<newNumSites; j++)
+            tempMatrix[i][j] = matrix[i][j];
+            
+    for (size_t k=0, c=0; k<nTrees; k++)
+        {
+        for (size_t j=0; j<numSites; j++)
+            {
+            for (size_t i=0; i<numTaxa; i++)
+                tempMatrix[i][c] = matrix[ twistMap[k][i] ][j];
+            c++;
+            }
+        }
+    numSites = newNumSites;
+    
+    delete [] matrix[0];
+    delete [] matrix;
+   
+    matrix = tempMatrix;
+}
+
 void Alignment::createDnaMatrix(NxsCharactersBlock* charblock) {
     
     if ( charblock == NULL )

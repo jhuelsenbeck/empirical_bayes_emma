@@ -557,7 +557,12 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns, int
         {
         std::cout << "     " << std::setw(2) << i << " ";
         for (size_t j=0; j<numHeatedChains; j++)
-            std::cout << std::fixed << std::setprecision(2) << (double)numAcceptedSwaps[i][j] / numAttemptedSwaps[i][j] << " ";
+            {
+            if (i != j)
+                std::cout << std::fixed << std::setprecision(2) << (double)numAcceptedSwaps[i][j] / numAttemptedSwaps[i][j] << " ";
+            else
+                std::cout << std::fixed << std::setprecision(2) << 0.0 << " ";
+            }
         std::cout << std::endl;
         }
 

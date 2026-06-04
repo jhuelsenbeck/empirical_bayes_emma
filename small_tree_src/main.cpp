@@ -30,7 +30,7 @@ int main(int argc, char* argv[]) {
     UserSettings& settings = UserSettings::userSettings();
     settings.readSettings(argc, argv);
     settings.print();
-    int numTaxa = 9;
+    int numTaxa = 10;
     int nReps = 50;
     
     // read the alignment file
