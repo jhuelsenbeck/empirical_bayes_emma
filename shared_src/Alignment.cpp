@@ -364,7 +364,7 @@ void Alignment::concatenateTwist(RandomVariable* rng, int nTrees) {
         tempMatrix[i] = tempMatrix[i-1] + newNumSites;
     for (size_t i=0; i<numTaxa; i++)
         for (size_t j=0; j<newNumSites; j++)
-            tempMatrix[i][j] = matrix[i][j];
+            tempMatrix[i][j] = 0;
             
     for (size_t k=0, c=0; k<nTrees; k++)
         {
