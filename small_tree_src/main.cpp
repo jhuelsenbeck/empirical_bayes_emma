@@ -30,7 +30,7 @@ int main(int argc, char* argv[]) {
     UserSettings& settings = UserSettings::userSettings();
     settings.readSettings(argc, argv);
     settings.print();
-    int numTaxa = 10;
+    int numTaxa = 9;
     int nReps = 50;
     
     // read the alignment file
@@ -40,7 +40,7 @@ int main(int argc, char* argv[]) {
         data = new Alignment(*originalAlignment, numTaxa, &rng);
     data->print(settings.getOutputFileName() + ".nex");
     if (settings.getNumTwists() > 0)
-        data->twist(&rng, settings.getNumTwists());
+        data->concatenateTwist(&rng, settings.getNumTwists());
     data->summarize();
     data->compress();
     BitSetFactory::getFactory().initialize(data->getNumTaxa());
