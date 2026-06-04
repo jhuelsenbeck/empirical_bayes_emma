@@ -256,7 +256,7 @@ void Mcmc::openConvergenceLog(size_t numReplicates) {
 
     convergenceLog << std::fixed << std::setprecision(6);
     convergenceLog << "cycle\t";
-    TreeConvergenceDiagnostics::writeStatsHeader(convergenceLog);
+    TreeConvergenceDiagnostics::writeStatsHeader(convergenceLog, numReplicates);
     convergenceLog << '\n';
     convergenceLog.flush();
 }
