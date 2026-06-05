@@ -1,0 +1,53 @@
+section	statistic	value
+summary	numTrees	2027025
+summary	numEdges	127702575
+summary	meanDegree	126.0000000000
+local	numLocalPeaks	2
+local	posteriorMassOfLocalPeaks	0.5614382869
+local	meanUphillFraction	0.4994833664
+local	posteriorWeightedMeanUphillFraction	0.0087869959
+local	meanBestNeighborLnLDifference	154.4615203262
+local	posteriorWeightedMeanBestNeighborLnLDifference	0.1526708597
+local	meanNeighborAbsLnLDifference	34.3908088701
+local	posteriorWeightedMeanNeighborAbsLnLDifference	61.4642057394
+basin	numPeaks	2
+basin	numPeaksMassGreater01	1
+basin	numPeaksMassGreater05	1
+basin	largestBasinSize	1898669
+basin	largestBasinMass	1.0000000000
+basin	basinMassEntropy	0.0000000000
+basin	effectiveNumBasins	1.0000000000
+basin	mapTreeHash	787259318825343417
+basin	mapPeakHash	787259318825343417
+basin	mapPeakId	0
+basin	mapBasinMass	1.0000000000
+basin	posteriorMassOutsideMapBasin	0.0000000000
+ascent	meanAscentLength	6.0208270742
+ascent	posteriorWeightedMeanAscentLength	0.4615885567
+ascent	meanAscentLengthCredible95	1.0000000000
+ascent	posteriorWeightedMeanAscentLengthCredible95	0.4311046027
+ascent	maxAscentLength	11
+credible95	credible95NumTrees	7
+credible95	credible95Mass	0.9532543632
+credible95	credible95NumComponents	1
+credible95	credible95LargestComponentSize	7
+credible95	credible95LargestComponentMass	0.9532543632
+credible95	credible95MapComponentSize	7
+credible95	credible95MapComponentMass	0.9532543632
+barrier	basinGraphEdges	1
+barrier	meanBasinGraphDegree	1.0000000000
+barrier	mapBasinGraphDegree	1
+barrier	basinGraphConnected	1
+barrier	minBarrierFromMap	111.8889300479
+barrier	meanBarrier	56.0812189570
+barrier	posteriorWeightedMeanBarrier	56.0812189570
+barrier	maxBarrier	111.8889300479
+
+# peaks
+peakId	peakHash	peakTreeProbability	basinNumTrees	basinPosteriorMass
+0	787259318825343417	0.5614382869	1898669	1.0000000000
+1	14033641623246684419	0.0000000000	128356	0.0000000000
+
+# saddles
+peakId1	peakId2	peakHash1	peakHash2	saddleTree1	saddleTree2	saddleLnL	saddleProbability	barrierFromPeak1	barrierFromPeak2
+0	1	787259318825343417	14033641623246684419	13053913667441449254	16353354004149232633	-5848.7641601562	0.0000000000	111.8889300479	0.2735078661
