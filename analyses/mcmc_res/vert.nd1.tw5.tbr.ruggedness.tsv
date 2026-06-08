@@ -1,0 +1,53 @@
+section	statistic	value
+summary	numTrees	2027025
+summary	numEdges	295527487
+summary	meanDegree	291.5874125874
+local	numLocalPeaks	2
+local	posteriorMassOfLocalPeaks	0.8172556101
+local	meanUphillFraction	0.4944694760
+local	posteriorWeightedMeanUphillFraction	0.0012880079
+local	meanBestNeighborLnLDifference	75.8370744191
+local	posteriorWeightedMeanBestNeighborLnLDifference	0.4990618448
+local	meanNeighborAbsLnLDifference	19.1261020130
+local	posteriorWeightedMeanNeighborAbsLnLDifference	45.0805142356
+basin	numPeaks	2
+basin	numPeaksMassGreater01	2
+basin	numPeaksMassGreater05	1
+basin	largestBasinSize	1485583
+basin	largestBasinMass	0.9593304640
+basin	basinMassEntropy	0.1700661632
+basin	effectiveNumBasins	1.1853832775
+basin	mapTreeHash	11980647480481983567
+basin	mapPeakHash	11980647480481983567
+basin	mapPeakId	0
+basin	mapBasinMass	0.9593304640
+basin	posteriorMassOutsideMapBasin	0.0406695360
+ascent	meanAscentLength	4.7689732490
+ascent	posteriorWeightedMeanAscentLength	0.1999025142
+ascent	meanAscentLengthCredible95	0.5000000000
+ascent	posteriorWeightedMeanAscentLengthCredible95	0.1411916922
+ascent	maxAscentLength	10
+credible95	credible95NumTrees	4
+credible95	credible95Mass	0.9516158643
+credible95	credible95NumComponents	2
+credible95	credible95LargestComponentSize	3
+credible95	credible95LargestComponentMass	0.9169490342
+credible95	credible95MapComponentSize	3
+credible95	credible95MapComponentMass	0.9169490342
+barrier	basinGraphEdges	1
+barrier	meanBasinGraphDegree	1.0000000000
+barrier	mapBasinGraphDegree	1
+barrier	basinGraphConnected	1
+barrier	minBarrierFromMap	3.9141210868
+barrier	meanBarrier	2.3557090627
+barrier	posteriorWeightedMeanBarrier	2.3557090627
+barrier	maxBarrier	3.9141210868
+
+# peaks
+peakId	peakHash	peakTreeProbability	basinNumTrees	basinPosteriorMass
+0	11980647480481983567	0.7825887800	1485583	0.9593304640
+1	2368437438886534048	0.0346668301	541442	0.0406695360
+
+# saddles
+peakId1	peakId2	peakHash1	peakHash2	saddleTree1	saddleTree2	saddleLnL	saddleProbability	barrierFromPeak1	barrierFromPeak2
+1	0	2368437438886534048	11980647480481983567	2368437438886534048	13346762162182110168	-8013.2719726562	0.0156206749	0.7972970386	3.9141210868

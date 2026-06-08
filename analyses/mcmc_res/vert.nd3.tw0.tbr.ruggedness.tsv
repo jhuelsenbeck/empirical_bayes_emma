@@ -1,0 +1,51 @@
+section	statistic	value
+summary	numTrees	2027025
+summary	numEdges	295527487
+summary	meanDegree	291.5874125874
+local	numLocalPeaks	1
+local	posteriorMassOfLocalPeaks	0.4399989116
+local	meanUphillFraction	0.4971214641
+local	posteriorWeightedMeanUphillFraction	0.0046498585
+local	meanBestNeighborLnLDifference	98.6850619378
+local	posteriorWeightedMeanBestNeighborLnLDifference	0.7902698533
+local	meanNeighborAbsLnLDifference	25.2532421855
+local	posteriorWeightedMeanNeighborAbsLnLDifference	56.6047965884
+basin	numPeaks	1
+basin	numPeaksMassGreater01	1
+basin	numPeaksMassGreater05	1
+basin	largestBasinSize	2027025
+basin	largestBasinMass	1.0000000000
+basin	basinMassEntropy	0.0000000000
+basin	effectiveNumBasins	1.0000000000
+basin	mapTreeHash	16088072311982832910
+basin	mapPeakHash	16088072311982832910
+basin	mapPeakId	0
+basin	mapBasinMass	1.0000000000
+basin	posteriorMassOutsideMapBasin	0.0000000000
+ascent	meanAscentLength	4.4666656800
+ascent	posteriorWeightedMeanAscentLength	0.5704880567
+ascent	meanAscentLengthCredible95	0.8333333333
+ascent	posteriorWeightedMeanAscentLengthCredible95	0.5445941321
+ascent	maxAscentLength	8
+credible95	credible95NumTrees	6
+credible95	credible95Mass	0.9661687357
+credible95	credible95NumComponents	1
+credible95	credible95LargestComponentSize	6
+credible95	credible95LargestComponentMass	0.9661687357
+credible95	credible95MapComponentSize	6
+credible95	credible95MapComponentMass	0.9661687357
+barrier	basinGraphEdges	0
+barrier	meanBasinGraphDegree	0.0000000000
+barrier	mapBasinGraphDegree	0
+barrier	basinGraphConnected	1
+barrier	minBarrierFromMap	0.0000000000
+barrier	meanBarrier	0.0000000000
+barrier	posteriorWeightedMeanBarrier	0.0000000000
+barrier	maxBarrier	0.0000000000
+
+# peaks
+peakId	peakHash	peakTreeProbability	basinNumTrees	basinPosteriorMass
+0	16088072311982832910	0.4399989116	2027025	1.0000000000
+
+# saddles
+peakId1	peakId2	peakHash1	peakHash2	saddleTree1	saddleTree2	saddleLnL	saddleProbability	barrierFromPeak1	barrierFromPeak2
