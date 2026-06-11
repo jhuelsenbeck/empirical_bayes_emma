@@ -83,3 +83,7 @@ build/small_tree_src/Peak.o
 build/small_tree_src/TreeSpace.d
 build/small_tree_src/TreeSpace.o
 small_tree
+build/small_tree_src/MarkovChainAnalyzer.d
+build/small_tree_src/MarkovChainAnalyzer.o
+build/small_tree_src/TreeConvergenceDiagnostics.d
+build/small_tree_src/TreeConvergenceDiagnostics.o
