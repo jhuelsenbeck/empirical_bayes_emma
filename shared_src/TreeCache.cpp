@@ -6,6 +6,10 @@
 #include "TreeCache.hpp"
 
 
+TreeCache::TreeCache(std::string nm) : cacheName(nm) {
+
+}
+
 TreeInfo* TreeCache::getTreeInfo(uint64_t treeHash) {
 
     TreeCacheMap::iterator it = treeCache.find(treeHash);

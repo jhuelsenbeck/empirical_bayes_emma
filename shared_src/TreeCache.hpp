@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 #include <limits>
+#include <string>
 #include <unordered_map>
 #include <vector>
 class CompactTree;
@@ -33,11 +34,14 @@ typedef std::unordered_map<uint64_t, TreeInfo*> TreeCacheMap;
 class TreeCache {
 
     public:
+                        TreeCache(void) = delete;
+                        TreeCache(std::string nm);
         size_t          cacheSize(void);
         void            freeTreeCache(void);
         TreeCacheMap&   getCache(void) { return treeCache; }
         TreeInfo*       getTreeInfo(uint64_t treeHash);
         TreeInfo*       getOrCreateTreeInfo(Tree* t);
+        std::string     getName(void) { return cacheName; }
         void            injectTreesAndLikelihoods(TreeCache* tc);
         const std::vector<double>& neighborProposalProbabilities(TreeInfo* info, double power);
         void            cacheNeighborProposalProbabilities(double power);
@@ -46,13 +50,7 @@ class TreeCache {
     
     private:
         TreeCacheMap    treeCache;
+        std::string     cacheName;
 };
-
-//using TreeCache = TreeCacheMap;
-
-//size_t      cacheSize(TreeCache* treeCache);
-//void        freeTreeCache(TreeCache* treeCache);
-//TreeInfo*   getTreeInfo(TreeCache* treeCache, uint64_t treeHash);
-//TreeInfo*   getOrCreateTreeInfo(TreeCache* treeCache, Tree* t);
 
 #endif

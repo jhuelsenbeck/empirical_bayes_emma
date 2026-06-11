@@ -3,6 +3,7 @@
 #include "Alignment.hpp"
 #include "BitSetFactory.hpp"
 #include "ExhaustiveSearch.hpp"
+#include "MarkovChainAnalyzer.hpp"
 #include "Mcmc.hpp"
 #include "RandomVariable.hpp"
 #include "Threads.hpp"
@@ -46,7 +47,7 @@ int main(int argc, char* argv[]) {
     BitSetFactory::getFactory().initialize(data->getNumTaxa());
 
     // calculate likelihoods of all trees
-    TreeCache treeCacheNni;
+    TreeCache treeCacheNni("NNI");
     TreeLikelihoods treeLikelihoods(&treeCacheNni);
     ExhaustiveSearch exhaustive(data, &treeCacheNni, &threads);
 
@@ -56,14 +57,14 @@ int main(int argc, char* argv[]) {
     generateNeighbors(treeCacheNni, treeNeighborsNni, "NNI");
     
     // generate the NNi of the NNI neighbors for each tree
-    TreeCache treeCacheNni2;
+    TreeCache treeCacheNni2("NNI2");
     treeCacheNni2.injectTreesAndLikelihoods(&treeCacheNni);
     TreeNeighborGeneratorNNI2 treeNeighborGeneratorNni2(&treeCacheNni2, &treeCacheNni);
     TreeNeighbors treeNeighborsNni2(&treeCacheNni2, &treeNeighborGeneratorNni2, data->getNumTaxa());
     generateNeighbors(treeCacheNni2, treeNeighborsNni2, "NNI2");
         
     // generate the TBR neighbors for each tree
-    TreeCache treeCacheTbr;
+    TreeCache treeCacheTbr("TBR");
     treeCacheTbr.injectTreesAndLikelihoods(&treeCacheNni);
     TreeNeighborGeneratorTBR treeNeighborGeneratorTbr(&treeCacheTbr);
     TreeNeighbors treeNeighborsTbr(&treeCacheTbr, &treeNeighborGeneratorTbr, data->getNumTaxa());
@@ -81,7 +82,36 @@ int main(int argc, char* argv[]) {
     treeSpaceNni.writeRuggednessStatistics(settings.getOutputFileName() + ".nni.ruggedness.tsv");
     treeSpaceNni2.writeRuggednessStatistics(settings.getOutputFileName() + ".nni2.ruggedness.tsv");
     treeSpaceTbr.writeRuggednessStatistics(settings.getOutputFileName() + ".tbr.ruggedness.tsv");
-        
+
+    // analytics          
+    std::vector<TreeCache*> caches = { &treeCacheNni, &treeCacheNni2, &treeCacheTbr };
+    std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5 };
+
+    std::string diagnosticsFileName = settings.getOutputFileName() + ".markov.tsv";
+    std::ofstream diagnosticsOut(diagnosticsFileName);
+    if (!diagnosticsOut)
+        throw std::runtime_error("Could not open Markov-chain diagnostics file: " + diagnosticsFileName);
+    MarkovChainAnalyzer::writeTsvHeader(diagnosticsOut);
+
+    for (double power : powers)
+        {
+        for (size_t i=0; i<caches.size(); i++)
+            {
+            TreeCache* c = caches[i];
+            std::cout << "   Analyzing " << c->getName() << " with power " << power << "\n";
+
+            c->sortNeighborsByLikelihood();
+            c->cacheNeighborProposalProbabilities(power);
+
+            MarkovChainAnalyzer analyzer(c, c->getName() + " (" + std::to_string(power) + ")", true); // true -> forces sparse
+            analyzer.writeTsvRow(diagnosticsOut, c->getName(), power);
+            diagnosticsOut.flush();
+            }
+        }
+
+    std::cout << "   Markov-chain diagnostics written to " << diagnosticsFileName << "\n";
+           
+#   if 0
     // Markov chain Monte Carlo exploration of tree space    
     std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5 };
     for (double power : powers)
@@ -111,7 +141,8 @@ int main(int argc, char* argv[]) {
         Mcmc mcmcmc(&rng, &treeCacheNni, data, true, convergenceFileName);
         mcmcmc.run(label, power, 0, nReps, 4);
         }
-    
+#   endif
+
     // clean up
     if (originalAlignment->getNumTaxa() > numTaxa)
         delete data;
