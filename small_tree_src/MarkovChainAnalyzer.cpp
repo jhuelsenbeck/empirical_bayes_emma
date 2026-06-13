@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <limits>
 #include <numeric>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 #include "MarkovChainAnalyzer.hpp"
@@ -245,6 +246,338 @@ MarkovChainAnalyzer::DetailedBalanceInfo MarkovChainAnalyzer::computeDetailedBal
             }
         }
     info.reversible = (info.max_abs_error < tol);
+    return info;
+}
+
+
+size_t MarkovChainAnalyzer::countReachableForward(Eigen::Index start, double threshold) const {
+
+    Eigen::Index N = static_cast<Eigen::Index>(n);
+    if (start < 0 || start >= N)
+        return 0;
+
+    std::vector<char> visited(static_cast<size_t>(N), 0);
+    std::vector<Eigen::Index> stack;
+    stack.reserve(1024);
+    visited[static_cast<size_t>(start)] = 1;
+    stack.push_back(start);
+    size_t count = 1;
+
+    if (isSparse) 
+        {
+        ensureRowSparse();
+        while (!stack.empty()) 
+            {
+            Eigen::Index i = stack.back();
+            stack.pop_back();
+            for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it) 
+                {
+                Eigen::Index j = it.col();
+                if (j == i) continue;
+                if (it.value() <= threshold) continue;
+                size_t jj = static_cast<size_t>(j);
+                if (!visited[jj]) 
+                    {
+                    visited[jj] = 1;
+                    stack.push_back(j);
+                    ++count;
+                    }
+                }
+            }
+        }
+    else 
+        {
+        while (!stack.empty()) 
+            {
+            Eigen::Index i = stack.back();
+            stack.pop_back();
+            for (Eigen::Index j = 0; j < N; ++j) 
+                {
+                if (j == i) continue;
+                if (P_dense(i, j) <= threshold) continue;
+                size_t jj = static_cast<size_t>(j);
+                if (!visited[jj]) 
+                    {
+                    visited[jj] = 1;
+                    stack.push_back(j);
+                    ++count;
+                    }
+                }
+            }
+        }
+    return count;
+}
+
+size_t MarkovChainAnalyzer::countReachableReverse(Eigen::Index start, double threshold) const {
+
+    Eigen::Index N = static_cast<Eigen::Index>(n);
+    if (start < 0 || start >= N)
+        return 0;
+
+    std::vector<char> visited(static_cast<size_t>(N), 0);
+    std::vector<Eigen::Index> stack;
+    stack.reserve(1024);
+    visited[static_cast<size_t>(start)] = 1;
+    stack.push_back(start);
+    size_t count = 1;
+
+    if (isSparse) 
+        {
+        // P_sparse is column-major. Iterating over column i gives all j such that P(j,i) > 0,
+        // which are exactly the outgoing neighbors of i in the reversed transition graph.
+        while (!stack.empty()) 
+            {
+            Eigen::Index i = stack.back();
+            stack.pop_back();
+            for (SparseMatrix::InnerIterator it(P_sparse, i); it; ++it) 
+                {
+                Eigen::Index j = it.row();
+                if (j == i) continue;
+                if (it.value() <= threshold) continue;
+                size_t jj = static_cast<size_t>(j);
+                if (!visited[jj]) 
+                    {
+                    visited[jj] = 1;
+                    stack.push_back(j);
+                    ++count;
+                    }
+                }
+            }
+        }
+    else 
+        {
+        while (!stack.empty()) 
+            {
+            Eigen::Index i = stack.back();
+            stack.pop_back();
+            for (Eigen::Index j = 0; j < N; ++j) 
+                {
+                if (j == i) continue;
+                if (P_dense(j, i) <= threshold) continue;
+                size_t jj = static_cast<size_t>(j);
+                if (!visited[jj]) 
+                    {
+                    visited[jj] = 1;
+                    stack.push_back(j);
+                    ++count;
+                    }
+                }
+            }
+        }
+    return count;
+}
+
+MarkovChainAnalyzer::IrreducibilityInfo MarkovChainAnalyzer::computeIrreducibilityInfo(double threshold, double tinyLeaveProb) const {
+
+    IrreducibilityInfo info;
+    info.threshold = threshold;
+    info.num_states = n;
+    if (n == 0)
+        return info;
+
+    Eigen::Index N = static_cast<Eigen::Index>(n);
+    info.min_out_degree = std::numeric_limits<size_t>::max();
+    info.max_out_degree = 0;
+    info.min_leave_probability = std::numeric_limits<double>::infinity();
+
+    if (isSparse) 
+        {
+        ensureRowSparse();
+        for (Eigen::Index i = 0; i < N; ++i) 
+            {
+            size_t outDegree = 0;
+            double leaveProb = 0.0;
+            for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it) 
+                {
+                Eigen::Index j = it.col();
+                double p = it.value();
+                if (j != i && p > threshold) 
+                    {
+                    ++outDegree;
+                    leaveProb += p;
+                    }
+                }
+            info.min_out_degree = std::min(info.min_out_degree, outDegree);
+            info.max_out_degree = std::max(info.max_out_degree, outDegree);
+            info.min_leave_probability = std::min(info.min_leave_probability, leaveProb);
+            if (outDegree == 0)
+                ++info.num_states_with_zero_out_degree;
+            if (leaveProb <= tinyLeaveProb)
+                ++info.num_states_with_tiny_leave_probability;
+            }
+        }
+    else 
+        {
+        for (Eigen::Index i = 0; i < N; ++i) 
+            {
+            size_t outDegree = 0;
+            double leaveProb = 0.0;
+            for (Eigen::Index j = 0; j < N; ++j) 
+                {
+                double p = P_dense(i, j);
+                if (j != i && p > threshold) 
+                    {
+                    ++outDegree;
+                    leaveProb += p;
+                    }
+                }
+            info.min_out_degree = std::min(info.min_out_degree, outDegree);
+            info.max_out_degree = std::max(info.max_out_degree, outDegree);
+            info.min_leave_probability = std::min(info.min_leave_probability, leaveProb);
+            if (outDegree == 0)
+                ++info.num_states_with_zero_out_degree;
+            if (leaveProb <= tinyLeaveProb)
+                ++info.num_states_with_tiny_leave_probability;
+            }
+        }
+
+    if (info.min_out_degree == std::numeric_limits<size_t>::max())
+        info.min_out_degree = 0;
+    if (!std::isfinite(info.min_leave_probability))
+        info.min_leave_probability = std::numeric_limits<double>::quiet_NaN();
+
+    info.states_reachable_from_0 = countReachableForward(0, threshold);
+    info.states_that_can_reach_0 = countReachableReverse(0, threshold);
+    info.irreducible = (info.states_reachable_from_0 == n && info.states_that_can_reach_0 == n);
+    return info;
+}
+
+bool MarkovChainAnalyzer::checkIrreducible(double threshold, std::ostream& os) const {
+
+    IrreducibilityInfo info = computeIrreducibilityInfo(threshold);
+    os << "   * Irreducible transition graph: " << (info.irreducible ? "yes" : "no") << "\n";
+    os << "   * Irreducibility threshold: " << info.threshold << "\n";
+    os << "   * States reachable from state 0: " << info.states_reachable_from_0 << " / " << info.num_states << "\n";
+    os << "   * States that can reach state 0: " << info.states_that_can_reach_0 << " / " << info.num_states << "\n";
+    os << "   * Out-degree range, excluding self transitions: [" << info.min_out_degree << ", " << info.max_out_degree << "]\n";
+    os << "   * Minimum probability of leaving a state: " << info.min_leave_probability << "\n";
+    os << "   * States with zero positive-probability outgoing moves, excluding self transitions: " << info.num_states_with_zero_out_degree << "\n";
+    os << "   * States with tiny leaving probability: " << info.num_states_with_tiny_leave_probability << "\n";
+    return info.irreducible;
+}
+
+
+std::vector<double> MarkovChainAnalyzer::defaultIrreducibilityThresholds(void) {
+
+    return {0.0, 1e-16, 1e-14, 1e-12, 1e-10, 1e-8, 1e-6};
+}
+
+MarkovChainAnalyzer::ThresholdedIrreducibilityInfo
+MarkovChainAnalyzer::computeThresholdedIrreducibilityInfo(const std::vector<double>& thresholds, double tinyLeaveProb) const {
+
+    ThresholdedIrreducibilityInfo summary;
+    summary.thresholds = thresholds;
+    summary.results.reserve(thresholds.size());
+
+    for (double tau : thresholds)
+        {
+        IrreducibilityInfo info = computeIrreducibilityInfo(tau, tinyLeaveProb);
+        summary.results.push_back(info);
+        if (tau == 0.0)
+            summary.irreducible_at_zero = info.irreducible;
+        if (info.irreducible)
+            summary.largest_threshold_irreducible = tau;
+        }
+    return summary;
+}
+
+MarkovChainAnalyzer::TransitionProbabilityInfo
+MarkovChainAnalyzer::computeTransitionProbabilityInfo(const std::vector<double>& thresholds) const {
+
+    TransitionProbabilityInfo info;
+    info.thresholds = thresholds;
+    info.num_transitions_le_threshold.assign(thresholds.size(), 0);
+    info.num_states_leave_le_threshold.assign(thresholds.size(), 0);
+
+    Eigen::Index N = static_cast<Eigen::Index>(n);
+    double sumTrans = 0.0;
+    double sumLeave = 0.0;
+    info.min_positive_offdiag_transition = std::numeric_limits<double>::infinity();
+    info.max_offdiag_transition = 0.0;
+    info.min_leave_probability = std::numeric_limits<double>::infinity();
+    info.max_leave_probability = 0.0;
+
+    auto recordTransition = [&](double p) {
+        if (p <= 0.0)
+            return;
+        ++info.num_positive_offdiag_transitions;
+        sumTrans += p;
+        info.min_positive_offdiag_transition = std::min(info.min_positive_offdiag_transition, p);
+        info.max_offdiag_transition = std::max(info.max_offdiag_transition, p);
+        for (size_t k = 0; k < thresholds.size(); ++k)
+            if (p <= thresholds[k])
+                ++info.num_transitions_le_threshold[k];
+    };
+
+    auto recordLeaveProbability = [&](double leaveProb) {
+        sumLeave += leaveProb;
+        info.min_leave_probability = std::min(info.min_leave_probability, leaveProb);
+        info.max_leave_probability = std::max(info.max_leave_probability, leaveProb);
+        if (leaveProb <= 0.0)
+            ++info.num_states_with_zero_leave_probability;
+        for (size_t k = 0; k < thresholds.size(); ++k)
+            if (leaveProb <= thresholds[k])
+                ++info.num_states_leave_le_threshold[k];
+    };
+
+    if (isSparse)
+        {
+        ensureRowSparse();
+        for (Eigen::Index i = 0; i < N; ++i)
+            {
+            double leaveProb = 0.0;
+            for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it)
+                {
+                Eigen::Index j = it.col();
+                double p = it.value();
+                if (j == i)
+                    continue;
+                leaveProb += p;
+                recordTransition(p);
+                }
+            recordLeaveProbability(leaveProb);
+            }
+        }
+    else
+        {
+        for (Eigen::Index i = 0; i < N; ++i)
+            {
+            double leaveProb = 0.0;
+            for (Eigen::Index j = 0; j < N; ++j)
+                {
+                if (j == i)
+                    continue;
+                double p = P_dense(i, j);
+                leaveProb += p;
+                recordTransition(p);
+                }
+            recordLeaveProbability(leaveProb);
+            }
+        }
+
+    if (info.num_positive_offdiag_transitions > 0)
+        {
+        info.mean_positive_offdiag_transition = sumTrans / static_cast<double>(info.num_positive_offdiag_transitions);
+        }
+    else
+        {
+        info.min_positive_offdiag_transition = std::numeric_limits<double>::quiet_NaN();
+        info.max_offdiag_transition = std::numeric_limits<double>::quiet_NaN();
+        info.mean_positive_offdiag_transition = std::numeric_limits<double>::quiet_NaN();
+        }
+
+    if (n > 0)
+        info.mean_leave_probability = sumLeave / static_cast<double>(n);
+    else
+        {
+        info.min_leave_probability = std::numeric_limits<double>::quiet_NaN();
+        info.max_leave_probability = std::numeric_limits<double>::quiet_NaN();
+        info.mean_leave_probability = std::numeric_limits<double>::quiet_NaN();
+        }
+
+    if (!std::isfinite(info.min_leave_probability))
+        info.min_leave_probability = std::numeric_limits<double>::quiet_NaN();
+
     return info;
 }
 
@@ -843,6 +1176,46 @@ void MarkovChainAnalyzer::writeTsvHeader(std::ostream& os) {
        << "\tanalysis_name"
        << "\tnum_states"
        << "\tstationary_discrepancy"
+       << "\tirreducible_at_zero"
+       << "\tlargest_threshold_irreducible"
+       << "\tmin_positive_offdiag_transition"
+       << "\tmax_offdiag_transition"
+       << "\tmean_positive_offdiag_transition"
+       << "\tmin_leave_probability"
+       << "\tmax_leave_probability"
+       << "\tmean_leave_probability"
+       << "\tnum_positive_offdiag_transitions"
+       << "\tnum_states_with_zero_leave_probability"
+       << "\tirreducible_gt_1e_minus_16"
+       << "\treachable_from0_frac_gt_1e_minus_16"
+       << "\tcan_reach0_frac_gt_1e_minus_16"
+       << "\ttransitions_le_1e_minus_16"
+       << "\tstates_leave_le_1e_minus_16"
+       << "\tirreducible_gt_1e_minus_14"
+       << "\treachable_from0_frac_gt_1e_minus_14"
+       << "\tcan_reach0_frac_gt_1e_minus_14"
+       << "\ttransitions_le_1e_minus_14"
+       << "\tstates_leave_le_1e_minus_14"
+       << "\tirreducible_gt_1e_minus_12"
+       << "\treachable_from0_frac_gt_1e_minus_12"
+       << "\tcan_reach0_frac_gt_1e_minus_12"
+       << "\ttransitions_le_1e_minus_12"
+       << "\tstates_leave_le_1e_minus_12"
+       << "\tirreducible_gt_1e_minus_10"
+       << "\treachable_from0_frac_gt_1e_minus_10"
+       << "\tcan_reach0_frac_gt_1e_minus_10"
+       << "\ttransitions_le_1e_minus_10"
+       << "\tstates_leave_le_1e_minus_10"
+       << "\tirreducible_gt_1e_minus_8"
+       << "\treachable_from0_frac_gt_1e_minus_8"
+       << "\tcan_reach0_frac_gt_1e_minus_8"
+       << "\ttransitions_le_1e_minus_8"
+       << "\tstates_leave_le_1e_minus_8"
+       << "\tirreducible_gt_1e_minus_6"
+       << "\treachable_from0_frac_gt_1e_minus_6"
+       << "\tcan_reach0_frac_gt_1e_minus_6"
+       << "\ttransitions_le_1e_minus_6"
+       << "\tstates_leave_le_1e_minus_6"
        << "\tdetailed_balance_checked"
        << "\tdetailed_balance_reversible"
        << "\tdetailed_balance_max_abs_error"
@@ -887,6 +1260,10 @@ void MarkovChainAnalyzer::writeTsvRow(std::ostream& os, const std::string& moveT
     else
         db.skipped = true;
 
+    std::vector<double> nearThresholds = defaultIrreducibilityThresholds();
+    ThresholdedIrreducibilityInfo irrSummary = computeThresholdedIrreducibilityInfo(nearThresholds);
+    TransitionProbabilityInfo transInfo = computeTransitionProbabilityInfo(nearThresholds);
+
     SpectralInfo spec = getSpectralInfo(defaultSparseEigenvalues);
     double accept = averageAcceptanceRate();
     double entropy = entropyRate();
@@ -918,6 +1295,46 @@ void MarkovChainAnalyzer::writeTsvRow(std::ostream& os, const std::string& moveT
        << "\t" << name
        << "\t" << n
        << "\t" << statErr
+       << "\t" << (irrSummary.irreducible_at_zero ? 1 : 0)
+       << "\t" << irrSummary.largest_threshold_irreducible
+       << "\t" << transInfo.min_positive_offdiag_transition
+       << "\t" << transInfo.max_offdiag_transition
+       << "\t" << transInfo.mean_positive_offdiag_transition
+       << "\t" << transInfo.min_leave_probability
+       << "\t" << transInfo.max_leave_probability
+       << "\t" << transInfo.mean_leave_probability
+       << "\t" << transInfo.num_positive_offdiag_transitions
+       << "\t" << transInfo.num_states_with_zero_leave_probability
+       << "\t" << (irrSummary.results.size() > 1 && irrSummary.results[1].irreducible ? 1 : 0)
+       << "\t" << (irrSummary.results.size() > 1 && irrSummary.results[1].num_states > 0 ? static_cast<double>(irrSummary.results[1].states_reachable_from_0) / static_cast<double>(irrSummary.results[1].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (irrSummary.results.size() > 1 && irrSummary.results[1].num_states > 0 ? static_cast<double>(irrSummary.results[1].states_that_can_reach_0) / static_cast<double>(irrSummary.results[1].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (transInfo.num_transitions_le_threshold.size() > 1 ? transInfo.num_transitions_le_threshold[1] : 0)
+       << "\t" << (transInfo.num_states_leave_le_threshold.size() > 1 ? transInfo.num_states_leave_le_threshold[1] : 0)
+       << "\t" << (irrSummary.results.size() > 2 && irrSummary.results[2].irreducible ? 1 : 0)
+       << "\t" << (irrSummary.results.size() > 2 && irrSummary.results[2].num_states > 0 ? static_cast<double>(irrSummary.results[2].states_reachable_from_0) / static_cast<double>(irrSummary.results[2].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (irrSummary.results.size() > 2 && irrSummary.results[2].num_states > 0 ? static_cast<double>(irrSummary.results[2].states_that_can_reach_0) / static_cast<double>(irrSummary.results[2].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (transInfo.num_transitions_le_threshold.size() > 2 ? transInfo.num_transitions_le_threshold[2] : 0)
+       << "\t" << (transInfo.num_states_leave_le_threshold.size() > 2 ? transInfo.num_states_leave_le_threshold[2] : 0)
+       << "\t" << (irrSummary.results.size() > 3 && irrSummary.results[3].irreducible ? 1 : 0)
+       << "\t" << (irrSummary.results.size() > 3 && irrSummary.results[3].num_states > 0 ? static_cast<double>(irrSummary.results[3].states_reachable_from_0) / static_cast<double>(irrSummary.results[3].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (irrSummary.results.size() > 3 && irrSummary.results[3].num_states > 0 ? static_cast<double>(irrSummary.results[3].states_that_can_reach_0) / static_cast<double>(irrSummary.results[3].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (transInfo.num_transitions_le_threshold.size() > 3 ? transInfo.num_transitions_le_threshold[3] : 0)
+       << "\t" << (transInfo.num_states_leave_le_threshold.size() > 3 ? transInfo.num_states_leave_le_threshold[3] : 0)
+       << "\t" << (irrSummary.results.size() > 4 && irrSummary.results[4].irreducible ? 1 : 0)
+       << "\t" << (irrSummary.results.size() > 4 && irrSummary.results[4].num_states > 0 ? static_cast<double>(irrSummary.results[4].states_reachable_from_0) / static_cast<double>(irrSummary.results[4].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (irrSummary.results.size() > 4 && irrSummary.results[4].num_states > 0 ? static_cast<double>(irrSummary.results[4].states_that_can_reach_0) / static_cast<double>(irrSummary.results[4].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (transInfo.num_transitions_le_threshold.size() > 4 ? transInfo.num_transitions_le_threshold[4] : 0)
+       << "\t" << (transInfo.num_states_leave_le_threshold.size() > 4 ? transInfo.num_states_leave_le_threshold[4] : 0)
+       << "\t" << (irrSummary.results.size() > 5 && irrSummary.results[5].irreducible ? 1 : 0)
+       << "\t" << (irrSummary.results.size() > 5 && irrSummary.results[5].num_states > 0 ? static_cast<double>(irrSummary.results[5].states_reachable_from_0) / static_cast<double>(irrSummary.results[5].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (irrSummary.results.size() > 5 && irrSummary.results[5].num_states > 0 ? static_cast<double>(irrSummary.results[5].states_that_can_reach_0) / static_cast<double>(irrSummary.results[5].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (transInfo.num_transitions_le_threshold.size() > 5 ? transInfo.num_transitions_le_threshold[5] : 0)
+       << "\t" << (transInfo.num_states_leave_le_threshold.size() > 5 ? transInfo.num_states_leave_le_threshold[5] : 0)
+       << "\t" << (irrSummary.results.size() > 6 && irrSummary.results[6].irreducible ? 1 : 0)
+       << "\t" << (irrSummary.results.size() > 6 && irrSummary.results[6].num_states > 0 ? static_cast<double>(irrSummary.results[6].states_reachable_from_0) / static_cast<double>(irrSummary.results[6].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (irrSummary.results.size() > 6 && irrSummary.results[6].num_states > 0 ? static_cast<double>(irrSummary.results[6].states_that_can_reach_0) / static_cast<double>(irrSummary.results[6].num_states) : std::numeric_limits<double>::quiet_NaN())
+       << "\t" << (transInfo.num_transitions_le_threshold.size() > 6 ? transInfo.num_transitions_le_threshold[6] : 0)
+       << "\t" << (transInfo.num_states_leave_le_threshold.size() > 6 ? transInfo.num_states_leave_le_threshold[6] : 0)
        << "\t" << (dbChecked ? 1 : 0)
        << "\t" << (db.reversible ? 1 : 0)
        << "\t" << (dbChecked ? db.max_abs_error : std::numeric_limits<double>::quiet_NaN())
@@ -959,6 +1376,18 @@ void MarkovChainAnalyzer::printReport(std::ostream& os) const {
         checkDetailedBalance();
     else
         os << "   * Detailed balance: skipped for large n\n";
+
+    checkIrreducible(0.0, os);
+    ThresholdedIrreducibilityInfo thrInfo = computeThresholdedIrreducibilityInfo();
+    TransitionProbabilityInfo transInfo = computeTransitionProbabilityInfo();
+    os << "   * Largest transition-probability threshold preserving irreducibility: "
+       << thrInfo.largest_threshold_irreducible << "\n";
+    os << "   * Smallest positive off-diagonal transition probability: "
+       << transInfo.min_positive_offdiag_transition << "\n";
+    os << "   * Mean probability of leaving a state: "
+       << transInfo.mean_leave_probability << "\n";
+    os << "   * Minimum probability of leaving a state: "
+       << transInfo.min_leave_probability << "\n";
 
     SpectralInfo spec = getSpectralInfo(defaultSparseEigenvalues);
     os << "   * SLEM |lambda_2|: " << spec.lambda2_abs << "\n";
