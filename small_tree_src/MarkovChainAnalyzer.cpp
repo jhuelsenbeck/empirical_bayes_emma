@@ -3,6 +3,8 @@
 #include <cmath>
 #include <complex>
 #include <iomanip>
+#include <fstream>
+#include <sstream>
 #include <limits>
 #include <numeric>
 #include <deque>
@@ -12,6 +14,18 @@
 #include "TreeCache.hpp"
 
 
+
+namespace {
+
+double quietNaNValue() {
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+bool finitePositive(double x) {
+    return std::isfinite(x) && x > 0.0;
+}
+
+}
 
 MarkovChainAnalyzer::MarkovChainAnalyzer(TreeCache* cache, std::string nme, bool useSparse)
     : isSparse(useSparse), name(nme) {
@@ -26,12 +40,14 @@ MarkovChainAnalyzer::MarkovChainAnalyzer(const SparseMatrix& P, const Vector& pi
     : P_sparse(P), pi(pi), n(P.rows()), isSparse(true) {
     
     P_sparse.makeCompressed();
+    stateHashes.resize(static_cast<size_t>(n), 0);
     initCommon();
 }
 
 MarkovChainAnalyzer::MarkovChainAnalyzer(const DenseMatrix& P, const Vector& pi)
     : P_dense(P), pi(pi), n(P.rows()), isSparse(false) {
     
+    stateHashes.resize(static_cast<size_t>(n), 0);
     initCommon();
 }
 
@@ -66,11 +82,17 @@ void MarkovChainAnalyzer::buildFromCache(TreeCache* cache) {
 
     std::unordered_map<uint64_t, Eigen::Index> hashToIdx;
     hashToIdx.reserve(n);
+    stateHashes.clear();
+    stateHashes.resize(n, 0);
     Eigen::Index idx = 0;
     for (const auto& [h, info] : tcache) 
         {
         if (info)
-            hashToIdx[h] = idx++;
+            {
+            hashToIdx[h] = idx;
+            stateHashes[static_cast<size_t>(idx)] = h;
+            ++idx;
+            }
         }
 
     pi = Vector::Zero(static_cast<Eigen::Index>(n));
@@ -634,6 +656,15 @@ MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfo(void)
             ++info.multiplicity_of_1;
         }
     finalizeSpectralInfo(info);
+    info.lambda1_error = (info.eigenvalues_complex.size() > 0)
+                       ? std::abs(info.eigenvalues_complex(0) - std::complex<double>(1.0, 0.0))
+                       : std::numeric_limits<double>::quiet_NaN();
+    info.spectral_valid = (info.eigenvalues_complex.size() >= 2 &&
+                           std::isfinite(info.lambda1_error) &&
+                           info.lambda1_error < 1e-8 &&
+                           std::isfinite(info.lambda2_abs) &&
+                           info.lambda2_abs <= 1.0 + 1e-10);
+    info.spectral_status = info.spectral_valid ? "ok_dense" : "invalid_dense";
     return info;
 }
 
@@ -642,51 +673,148 @@ MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse
     if (!isSparse || n <= denseStateLimit)
         return computeSpectralInfo();
 
+    SpectralInfo bestInfo;
+    bestInfo.computed_sparse = true;
+    bestInfo.spectral_status = "not_run";
+
+    if (n < 2) {
+        bestInfo.spectral_status = "too_few_states";
+        return bestInfo;
+    }
+
     nev = std::max(2, nev);
     nev = std::min(nev, static_cast<int>(n) - 1);
+
+    // A few increasingly conservative ARPACK/Lanczos-style attempts.
+    // Larger ncv costs more memory, but is often much more stable when many
+    // eigenvalues are clustered near 1, which is exactly the near-reducible case.
+    struct SolverAttempt {
+        int ncv;
+        int maxit;
+        double tol;
+    };
+
+    std::vector<SolverAttempt> attempts;
+    attempts.push_back({std::min(static_cast<int>(n), std::max(2 * nev + 1, 20)), 1000, 1e-6});
+    attempts.push_back({std::min(static_cast<int>(n), std::max(4 * nev + 20, 80)), 3000, 1e-7});
+    attempts.push_back({std::min(static_cast<int>(n), std::max(6 * nev + 40, 160)), 6000, 1e-8});
 
     using Op = Spectra::SparseGenMatProd<double>; // column-major SparseMatrix
     Op op(P_sparse);
 
-    int ncv = std::min(static_cast<int>(n), std::max(2 * nev + 1, 20));
-    Spectra::GenEigsSolver<Op> eigs(op, nev, ncv);
+    double bestResidual = std::numeric_limits<double>::infinity();
+    int attemptNumber = 0;
 
-    eigs.init();
-    int nconv = static_cast<int>(eigs.compute(Spectra::SortRule::LargestMagn, 1000, 1e-6));
+    for (const SolverAttempt& attempt : attempts) {
+        ++attemptNumber;
 
-    SpectralInfo info;
-    info.computed_sparse = true;
-    info.n_converged = nconv;
+        Spectra::GenEigsSolver<Op> eigs(op, nev, attempt.ncv);
+        eigs.init();
+        int nconv = static_cast<int>(eigs.compute(Spectra::SortRule::LargestMagn,
+                                                  attempt.maxit,
+                                                  attempt.tol));
 
-    if (nconv >= 2) 
-        {
+        SpectralInfo info;
+        info.computed_sparse = true;
+        info.n_converged = nconv;
+        info.ncv_used = attempt.ncv;
+        info.max_iterations_used = attempt.maxit;
+        info.tolerance_used = attempt.tol;
+        info.num_solver_attempts = attemptNumber;
+        info.spectral_status = "insufficient_converged_eigenvalues";
+
+        if (nconv < 2) {
+            if (nconv > bestInfo.n_converged)
+                bestInfo = info;
+            continue;
+        }
+
         Eigen::VectorXcd evals_complex = eigs.eigenvalues();
-        std::vector<std::pair<double, std::complex<double>>> ev;
+        Eigen::MatrixXcd evecs_complex = eigs.eigenvectors();
+
+        struct EigenPairRecord {
+            double modulus;
+            std::complex<double> value;
+            Eigen::Index original_index;
+        };
+
+        std::vector<EigenPairRecord> ev;
         ev.reserve(static_cast<size_t>(evals_complex.size()));
         for (Eigen::Index i = 0; i < evals_complex.size(); ++i)
-            ev.push_back({std::abs(evals_complex(i)), evals_complex(i)});
-        std::sort(ev.begin(), ev.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+            ev.push_back({std::abs(evals_complex(i)), evals_complex(i), i});
+        std::sort(ev.begin(), ev.end(), [](const auto& a, const auto& b) { return a.modulus > b.modulus; });
 
         Eigen::Index m = static_cast<Eigen::Index>(ev.size());
         info.eigenvalues_complex.resize(m);
         info.eigenvalue_moduli.resize(m);
-        for (Eigen::Index i = 0; i < m; ++i) 
-            {
-            info.eigenvalue_moduli(i) = ev[static_cast<size_t>(i)].first;
-            info.eigenvalues_complex(i) = ev[static_cast<size_t>(i)].second;
-            if (std::abs(ev[static_cast<size_t>(i)].second.imag()) > 1e-10)
+        for (Eigen::Index i = 0; i < m; ++i) {
+            info.eigenvalue_moduli(i) = ev[static_cast<size_t>(i)].modulus;
+            info.eigenvalues_complex(i) = ev[static_cast<size_t>(i)].value;
+            if (std::abs(ev[static_cast<size_t>(i)].value.imag()) > 1e-10)
                 info.has_complex_eigenvalues = true;
-            if (std::abs(ev[static_cast<size_t>(i)].first - 1.0) < 1e-8)
+            if (std::abs(ev[static_cast<size_t>(i)].value - std::complex<double>(1.0, 0.0)) < 1e-8)
                 ++info.multiplicity_of_1;
-            }
-        finalizeSpectralInfo(info);
-        } 
-    else 
-        {
-        std::cerr << "Warning: Only " << nconv << " eigenvalues converged.\n";
         }
-    return info;
+
+        finalizeSpectralInfo(info);
+
+        // Residual check: ||P v - lambda v|| / ||v|| for the converged eigenpairs.
+        // This is the most important guard against silently using bad eigenvalues.
+        double maxResidual = 0.0;
+        for (Eigen::Index k = 0; k < m; ++k) {
+            Eigen::Index original = ev[static_cast<size_t>(k)].original_index;
+            Eigen::VectorXcd v = evecs_complex.col(original);
+            Eigen::VectorXcd Pv = P_sparse * v;
+            double denom = std::max(v.norm(), std::numeric_limits<double>::min());
+            double resid = (Pv - ev[static_cast<size_t>(k)].value * v).norm() / denom;
+            maxResidual = std::max(maxResidual, resid);
+        }
+        info.max_eigen_residual = maxResidual;
+        info.lambda1_error = (m > 0) ? std::abs(info.eigenvalues_complex(0) - std::complex<double>(1.0, 0.0))
+                                    : std::numeric_limits<double>::quiet_NaN();
+
+        bool enough = (info.n_converged >= 2 && info.eigenvalue_moduli.size() >= 2);
+        bool lambda1OK = std::isfinite(info.lambda1_error) && info.lambda1_error < 1e-5;
+        bool residualOK = std::isfinite(info.max_eigen_residual) && info.max_eigen_residual < 1e-5;
+        bool lambda2OK = std::isfinite(info.lambda2_abs) && info.lambda2_abs <= 1.0 + 1e-7;
+
+        info.spectral_valid = enough && lambda1OK && residualOK && lambda2OK;
+        if (info.spectral_valid) {
+            info.spectral_status = "ok";
+            return info;
+        }
+
+        if (!lambda1OK)
+            info.spectral_status = "dominant_eigenvalue_not_close_to_one";
+        else if (!residualOK)
+            info.spectral_status = "large_eigen_residual";
+        else if (!lambda2OK)
+            info.spectral_status = "lambda2_modulus_greater_than_one";
+        else
+            info.spectral_status = "invalid_unknown_reason";
+
+        if (maxResidual < bestResidual || bestInfo.n_converged < 2) {
+            bestResidual = maxResidual;
+            bestInfo = info;
+        }
+    }
+
+    if (!bestInfo.spectral_valid) {
+        std::cerr << "Warning: sparse eigen calculation unreliable for " << name
+                  << " (status=" << bestInfo.spectral_status
+                  << ", converged=" << bestInfo.n_converged
+                  << ", max residual=" << bestInfo.max_eigen_residual
+                  << ", lambda1 error=" << bestInfo.lambda1_error
+                  << ").\n";
+        bestInfo.spectral_gap = quietNaNValue();
+        bestInfo.lambda2_abs = quietNaNValue();
+        bestInfo.relaxation_time = quietNaNValue();
+        bestInfo.worst_case_iact = quietNaNValue();
+    }
+
+    return bestInfo;
 }
+
 
 MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::getSpectralInfo(int nev) const {
 
@@ -933,6 +1061,9 @@ double MarkovChainAnalyzer::kemenyConstant(void) const {
 double MarkovChainAnalyzer::approximateKemenyConstant(int nev) const {
 
     SpectralInfo spec = getSpectralInfo(std::max(nev, defaultSparseEigenvalues));
+    if (!spec.spectral_valid || spec.eigenvalues_complex.size() < 2)
+        return std::numeric_limits<double>::quiet_NaN();
+
     std::complex<double> K(0.0, 0.0);
     for (Eigen::Index i = 0; i < spec.eigenvalues_complex.size(); ++i) 
         {
@@ -947,11 +1078,13 @@ double MarkovChainAnalyzer::approximateKemenyConstant(int nev) const {
 double MarkovChainAnalyzer::mixingTimeUpperBoundValue(double epsilon) const {
 
     SpectralInfo spec = getSpectralInfo(defaultSparseEigenvalues);
+    if (!spec.spectral_valid)
+        return std::numeric_limits<double>::quiet_NaN();
     double minPi = pi.minCoeff();
     if (minPi <= 0.0)
         minPi = 1.0 / static_cast<double>(n);
     if (!(spec.spectral_gap > 0.0))
-        return std::numeric_limits<double>::infinity();
+        return std::numeric_limits<double>::quiet_NaN();
     return (1.0 / spec.spectral_gap) * std::log(1.0 / (epsilon * minPi));
 }
 
@@ -1167,6 +1300,268 @@ double MarkovChainAnalyzer::meanHittingTimeToSetQuiet(const std::vector<Eigen::I
         }
 
     return h.mean();
+}
+
+
+
+MarkovChainAnalyzer::DenseMatrix MarkovChainAnalyzer::denseTransitionMatrix(void) const {
+
+    return isSparse ? DenseMatrix(P_sparse) : P_dense;
+}
+
+void MarkovChainAnalyzer::writePosteriorTsv(const std::string& fileName) const {
+
+    std::ofstream out(fileName);
+    if (!out)
+        throw std::runtime_error("Could not open posterior file: " + fileName);
+
+    out << std::setprecision(17);
+    out << "state_index\ttree_hash\tposterior_probability\n";
+    for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(n); ++i)
+        {
+        uint64_t h = (static_cast<size_t>(i) < stateHashes.size()) ? stateHashes[static_cast<size_t>(i)] : 0;
+        out << i << "\t" << h << "\t" << pi(i) << "\n";
+        }
+}
+
+void MarkovChainAnalyzer::writeTransitionKernelTsv(const std::string& fileName, bool denseFormat) const {
+
+    std::ofstream out(fileName);
+    if (!out)
+        throw std::runtime_error("Could not open transition-kernel file: " + fileName);
+
+    out << std::setprecision(17);
+
+    if (denseFormat)
+        {
+        DenseMatrix P = denseTransitionMatrix();
+        out << "state_index\ttree_hash";
+        for (Eigen::Index j = 0; j < static_cast<Eigen::Index>(n); ++j)
+            out << "\tP_to_" << j;
+        out << "\n";
+
+        for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(n); ++i)
+            {
+            uint64_t hi = (static_cast<size_t>(i) < stateHashes.size()) ? stateHashes[static_cast<size_t>(i)] : 0;
+            out << i << "\t" << hi;
+            for (Eigen::Index j = 0; j < static_cast<Eigen::Index>(n); ++j)
+                out << "\t" << P(i, j);
+            out << "\n";
+            }
+        return;
+        }
+
+    // Coordinate format is much more practical for n = 10395:
+    // one row per nonzero P_ij.
+    out << "from_index\tfrom_hash\tto_index\tto_hash\tprobability\n";
+    if (isSparse)
+        {
+        ensureRowSparse();
+        for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(n); ++i)
+            {
+            uint64_t hi = (static_cast<size_t>(i) < stateHashes.size()) ? stateHashes[static_cast<size_t>(i)] : 0;
+            for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it)
+                {
+                Eigen::Index j = it.col();
+                uint64_t hj = (static_cast<size_t>(j) < stateHashes.size()) ? stateHashes[static_cast<size_t>(j)] : 0;
+                out << i << "\t" << hi << "\t" << j << "\t" << hj << "\t" << it.value() << "\n";
+                }
+            }
+        }
+    else
+        {
+        for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(n); ++i)
+            {
+            uint64_t hi = (static_cast<size_t>(i) < stateHashes.size()) ? stateHashes[static_cast<size_t>(i)] : 0;
+            for (Eigen::Index j = 0; j < static_cast<Eigen::Index>(n); ++j)
+                {
+                double p = P_dense(i, j);
+                if (p == 0.0)
+                    continue;
+                uint64_t hj = (static_cast<size_t>(j) < stateHashes.size()) ? stateHashes[static_cast<size_t>(j)] : 0;
+                out << i << "\t" << hi << "\t" << j << "\t" << hj << "\t" << p << "\n";
+                }
+            }
+        }
+}
+
+void MarkovChainAnalyzer::writeFullEigenSystemTsv(const std::string& filePrefix, bool writeEigenvectors) const {
+
+    DenseMatrix P = denseTransitionMatrix();
+
+    // EigenSolver computes right eigenvectors: P v = lambda v.
+    Eigen::EigenSolver<DenseMatrix> solver(P, writeEigenvectors);
+    if (solver.info() != Eigen::Success)
+        throw std::runtime_error("Dense eigensystem calculation failed for: " + filePrefix);
+
+    Eigen::VectorXcd evals = solver.eigenvalues();
+
+    std::ofstream evalOut(filePrefix + ".eigenvalues.tsv");
+    if (!evalOut)
+        throw std::runtime_error("Could not open eigenvalue file: " + filePrefix + ".eigenvalues.tsv");
+
+    evalOut << std::setprecision(17);
+    evalOut << "eigen_index\treal\timag\tmodulus\tresidual\n";
+
+    Eigen::MatrixXcd evecs;
+    if (writeEigenvectors)
+        evecs = solver.eigenvectors();
+
+    for (Eigen::Index k = 0; k < evals.size(); ++k)
+        {
+        double residual = std::numeric_limits<double>::quiet_NaN();
+        if (writeEigenvectors)
+            {
+            Eigen::VectorXcd v = evecs.col(k);
+            Eigen::VectorXcd Pv = P.cast<std::complex<double> >() * v;
+            double denom = std::max(v.norm(), std::numeric_limits<double>::min());
+            residual = (Pv - evals(k) * v).norm() / denom;
+            }
+        evalOut << k << "\t" << evals(k).real() << "\t" << evals(k).imag()
+                << "\t" << std::abs(evals(k)) << "\t" << residual << "\n";
+        }
+
+    if (!writeEigenvectors)
+        return;
+
+    std::ofstream vecOut(filePrefix + ".eigenvectors.tsv");
+    if (!vecOut)
+        throw std::runtime_error("Could not open eigenvector file: " + filePrefix + ".eigenvectors.tsv");
+
+    vecOut << std::setprecision(17);
+    vecOut << "eigen_index\tstate_index\ttree_hash\treal\timag\n";
+    for (Eigen::Index k = 0; k < evecs.cols(); ++k)
+        {
+        for (Eigen::Index i = 0; i < evecs.rows(); ++i)
+            {
+            uint64_t h = (static_cast<size_t>(i) < stateHashes.size()) ? stateHashes[static_cast<size_t>(i)] : 0;
+            vecOut << k << "\t" << i << "\t" << h << "\t"
+                   << evecs(i, k).real() << "\t" << evecs(i, k).imag() << "\n";
+            }
+        }
+}
+
+MarkovChainAnalyzer::Vector MarkovChainAnalyzer::hittingTimesToStateVector(Eigen::Index target) const {
+
+    if (target < 0 || target >= static_cast<Eigen::Index>(n))
+        return Vector();
+
+    Eigen::Index N = static_cast<Eigen::Index>(n);
+    Vector b = Vector::Ones(N);
+    b(target) = 0.0;
+
+    DenseMatrix P = denseTransitionMatrix();
+    DenseMatrix A = DenseMatrix::Identity(N, N) - P;
+    A.row(target).setZero();
+    A(target, target) = 1.0;
+
+    Eigen::PartialPivLU<DenseMatrix> solver(A);
+    return solver.solve(b);
+}
+
+MarkovChainAnalyzer::Vector MarkovChainAnalyzer::hittingTimesToSetVector(const std::vector<Eigen::Index>& targets) const {
+
+    if (targets.empty())
+        return Vector();
+
+    Eigen::Index N = static_cast<Eigen::Index>(n);
+    std::vector<char> isTarget(static_cast<size_t>(N), 0);
+    for (Eigen::Index idx : targets)
+        if (idx >= 0 && idx < N)
+            isTarget[static_cast<size_t>(idx)] = 1;
+
+    Vector b = Vector::Ones(N);
+    for (Eigen::Index i = 0; i < N; ++i)
+        if (isTarget[static_cast<size_t>(i)])
+            b(i) = 0.0;
+
+    DenseMatrix P = denseTransitionMatrix();
+    DenseMatrix A = DenseMatrix::Identity(N, N) - P;
+    for (Eigen::Index i = 0; i < N; ++i)
+        {
+        if (isTarget[static_cast<size_t>(i)])
+            {
+            A.row(i).setZero();
+            A(i, i) = 1.0;
+            }
+        }
+
+    Eigen::PartialPivLU<DenseMatrix> solver(A);
+    return solver.solve(b);
+}
+
+void MarkovChainAnalyzer::writeSmallHittingTimeFiles(const std::string& filePrefix, bool writeAllPairs) const {
+
+    Eigen::Index mapIdx = getMAPTreeIndex();
+    std::vector<Eigen::Index> targets95 = posteriorMassSet(0.95);
+
+    Vector hMap = hittingTimesToStateVector(mapIdx);
+    Vector h95 = hittingTimesToSetVector(targets95);
+
+    std::ofstream out(filePrefix + ".hitting_times.tsv");
+    if (!out)
+        throw std::runtime_error("Could not open hitting-time file: " + filePrefix + ".hitting_times.tsv");
+
+    out << std::setprecision(17);
+    out << "state_index\ttree_hash\tposterior_probability\thit_map\thit_posterior95_set\n";
+    for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(n); ++i)
+        {
+        uint64_t h = (static_cast<size_t>(i) < stateHashes.size()) ? stateHashes[static_cast<size_t>(i)] : 0;
+        out << i << "\t" << h << "\t" << pi(i) << "\t"
+            << (hMap.size() == static_cast<Eigen::Index>(n) ? hMap(i) : std::numeric_limits<double>::quiet_NaN()) << "\t"
+            << (h95.size() == static_cast<Eigen::Index>(n) ? h95(i) : std::numeric_limits<double>::quiet_NaN()) << "\n";
+        }
+
+    std::ofstream summary(filePrefix + ".hitting_summary.tsv");
+    if (!summary)
+        throw std::runtime_error("Could not open hitting-time summary file: " + filePrefix + ".hitting_summary.tsv");
+
+    double mass95 = 0.0;
+    for (Eigen::Index idx : targets95)
+        mass95 += pi(idx);
+
+    summary << std::setprecision(17);
+    summary << "map_index\tmap_hash\tmap_posterior\tposterior95_set_size\tposterior95_actual_mass\tmean_hit_map_uniform_start\tmean_hit_posterior95_uniform_start\n";
+    uint64_t mapHash = (static_cast<size_t>(mapIdx) < stateHashes.size()) ? stateHashes[static_cast<size_t>(mapIdx)] : 0;
+    summary << mapIdx << "\t" << mapHash << "\t" << pi(mapIdx) << "\t"
+            << targets95.size() << "\t" << mass95 << "\t"
+            << (hMap.size() == static_cast<Eigen::Index>(n) ? hMap.mean() : std::numeric_limits<double>::quiet_NaN()) << "\t"
+            << (h95.size() == static_cast<Eigen::Index>(n) ? h95.mean() : std::numeric_limits<double>::quiet_NaN()) << "\n";
+
+    if (!writeAllPairs)
+        return;
+
+    DenseMatrix M = computeHittingTimes();
+    if (M.rows() == 0)
+        return;
+
+    std::ofstream allOut(filePrefix + ".all_pairs_hitting_times.tsv");
+    if (!allOut)
+        throw std::runtime_error("Could not open all-pairs hitting-time file: " + filePrefix + ".all_pairs_hitting_times.tsv");
+
+    allOut << std::setprecision(17);
+    allOut << "from_index\tfrom_hash\tto_index\tto_hash\thitting_time\n";
+    for (Eigen::Index i = 0; i < M.rows(); ++i)
+        {
+        uint64_t hi = (static_cast<size_t>(i) < stateHashes.size()) ? stateHashes[static_cast<size_t>(i)] : 0;
+        for (Eigen::Index j = 0; j < M.cols(); ++j)
+            {
+            uint64_t hj = (static_cast<size_t>(j) < stateHashes.size()) ? stateHashes[static_cast<size_t>(j)] : 0;
+            allOut << i << "\t" << hi << "\t" << j << "\t" << hj << "\t" << M(i, j) << "\n";
+            }
+        }
+}
+
+void MarkovChainAnalyzer::writeSmallStateAnalysisFiles(const std::string& filePrefix, bool writeDenseKernel, bool writeFullEigenvectors, bool writeAllPairsHittingTimes) const {
+
+    writePosteriorTsv(filePrefix + ".posterior.tsv");
+    writeTransitionKernelTsv(filePrefix + ".transition_kernel.tsv", false);
+
+    if (writeDenseKernel)
+        writeTransitionKernelTsv(filePrefix + ".transition_kernel_dense.tsv", true);
+
+    writeFullEigenSystemTsv(filePrefix, writeFullEigenvectors);
+    writeSmallHittingTimeFiles(filePrefix, writeAllPairsHittingTimes);
 }
 
 void MarkovChainAnalyzer::writeTsvHeader(std::ostream& os) {

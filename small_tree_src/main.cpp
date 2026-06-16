@@ -1,5 +1,7 @@
 #include <iostream>
 #include <cstdlib>
+#include <sstream>
+#include <iomanip>
 #include "Alignment.hpp"
 #include "BitSetFactory.hpp"
 #include "ExhaustiveSearch.hpp"
@@ -16,6 +18,7 @@
 
 void generateNeighbors(TreeCache& treeCache, TreeNeighbors& generator, std::string label);
 void printHeader(void);
+std::string powerLabel(double x);
 
 
 
@@ -73,18 +76,25 @@ int main(int argc, char* argv[]) {
     TreeSpace treeSpaceNni(&treeCacheNni, "NNI");
     treeSpaceNni.characterize();
     treeSpaceNni.printPosterior();
-    treeSpaceNni.printPosterior(settings.getOutputFileName() + ".true");
+    treeSpaceNni.printPosterior(settings.getOutputFileName() + ".nni.true");
+    treeSpaceNni.writeRuggednessStatistics(settings.getOutputFileName() + ".nni.ruggedness.tsv");
+
     TreeSpace treeSpaceNni2(&treeCacheNni2, "NNI2");
     treeSpaceNni2.characterize();
+    treeSpaceNni2.printPosterior();
+    treeSpaceNni2.printPosterior(settings.getOutputFileName() + ".nni2.true");
+    treeSpaceNni2.writeRuggednessStatistics(settings.getOutputFileName() + ".nni2.ruggedness.tsv");
+
     TreeSpace treeSpaceTbr(&treeCacheTbr, "TBR");
     treeSpaceTbr.characterize();
-    treeSpaceNni.writeRuggednessStatistics(settings.getOutputFileName() + ".nni.ruggedness.tsv");
-    treeSpaceNni2.writeRuggednessStatistics(settings.getOutputFileName() + ".nni2.ruggedness.tsv");
+    treeSpaceTbr.printPosterior();
+    treeSpaceTbr.printPosterior(settings.getOutputFileName() + ".tbr.true");
     treeSpaceTbr.writeRuggednessStatistics(settings.getOutputFileName() + ".tbr.ruggedness.tsv");
 
     // analytics using the kernel of the Markov chain
     std::vector<TreeCache*> caches = { &treeCacheNni, &treeCacheNni2, &treeCacheTbr };
     std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2 };
+    bool writeSmallStateFiles = (data->getNumTaxa() <= 8);
     std::string diagnosticsFileName = settings.getOutputFileName() + ".markov.tsv";
     std::ofstream diagnosticsOut(diagnosticsFileName);
     if (!diagnosticsOut)
@@ -103,6 +113,16 @@ int main(int argc, char* argv[]) {
             MarkovChainAnalyzer analyzer(c, c->getName() + " (" + std::to_string(power) + ")", true); // true -> forces sparse
             analyzer.writeTsvRow(diagnosticsOut, c->getName(), power);
             diagnosticsOut.flush();
+
+            if (writeSmallStateFiles)
+                {
+                std::string prefix = settings.getOutputFileName() + "." + c->getName() + ".beta_" + powerLabel(power);
+                std::cout << "   Writing small-state exact files with prefix " << prefix << "\n";
+                analyzer.writeSmallStateAnalysisFiles(prefix,
+                                                       false,  // dense kernel TSV is enormous; coordinate kernel is always written
+                                                       true,   // full right eigenvectors
+                                                       false); // all-pairs hitting-time matrix is enormous; MAP and 95% set are written
+                }
             }
         }
     std::cout << "   Markov-chain diagnostics written to " << diagnosticsFileName << "\n";
@@ -216,4 +236,17 @@ void printHeader(void) {
     std::cout << "   * Bruce Rannala (University of California, Davis)" << std::endl;
     std::cout << "   * Levi Yoder Raskin (University of California, Berkeley)" << std::endl;
     std::cout << std::endl;
+}
+
+std::string powerLabel(double x) {
+
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(2) << x;
+    std::string s = ss.str();
+    for (char& c : s)
+        {
+        if (c == '.')
+            c = 'p';
+        }
+    return s;
 }

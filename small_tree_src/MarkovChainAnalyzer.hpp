@@ -7,6 +7,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <cstdint>
 #include <cstddef>
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
@@ -98,6 +99,16 @@ class MarkovChainAnalyzer {
             bool                    has_complex_eigenvalues = false;
             bool                    computed_sparse = false;
             int                     n_converged = 0;
+
+            // Robustness diagnostics for iterative sparse eigensolves.
+            bool                    spectral_valid = false;
+            std::string             spectral_status = "not_computed";
+            double                  max_eigen_residual = std::numeric_limits<double>::quiet_NaN();
+            double                  lambda1_error = std::numeric_limits<double>::quiet_NaN();
+            int                     ncv_used = 0;
+            int                     max_iterations_used = 0;
+            double                  tolerance_used = std::numeric_limits<double>::quiet_NaN();
+            int                     num_solver_attempts = 0;
         };
         
         SpectralInfo                computeSpectralInfo(void) const;
@@ -136,6 +147,23 @@ class MarkovChainAnalyzer {
         const Vector&               getPosterior(void) const { return pi; }
         size_t                      numStates(void) const { return n; }
 
+
+        // Exact/small-state output utilities. Intended for <= 8-taxon analyses
+        // where n = 10395 or smaller. The transition kernel is written in
+        // coordinate format by default because a dense TSV is very large.
+        void                        writeSmallStateAnalysisFiles(const std::string& filePrefix,
+                                                                 bool writeDenseKernel = false,
+                                                                 bool writeFullEigenvectors = true,
+                                                                 bool writeAllPairsHittingTimes = false) const;
+        void                        writeTransitionKernelTsv(const std::string& fileName,
+                                                             bool denseFormat = false) const;
+        void                        writePosteriorTsv(const std::string& fileName) const;
+        void                        writeFullEigenSystemTsv(const std::string& filePrefix,
+                                                            bool writeEigenvectors = true) const;
+        void                        writeSmallHittingTimeFiles(const std::string& filePrefix,
+                                                               bool writeAllPairs = false) const;
+        const std::vector<uint64_t>& getStateHashes(void) const { return stateHashes; }
+
                                     // tuning knobs for million-state analyses.
         void                        setDenseStateLimit(size_t x) { denseStateLimit = x; }
         void                        setExactHittingStateLimit(size_t x) { exactHittingStateLimit = x; }
@@ -154,11 +182,15 @@ class MarkovChainAnalyzer {
         size_t                      countReachableForward(Eigen::Index start, double threshold) const;
         size_t                      countReachableReverse(Eigen::Index start, double threshold) const;
         static void                 finalizeSpectralInfo(SpectralInfo& info);
+        DenseMatrix                 denseTransitionMatrix(void) const;
+        Vector                      hittingTimesToStateVector(Eigen::Index target) const;
+        Vector                      hittingTimesToSetVector(const std::vector<Eigen::Index>& targets) const;
         SparseMatrix                P_sparse;
         mutable RowSparseMatrix     P_row_sparse;
         mutable bool                rowSparseReady = false;
         DenseMatrix                 P_dense;
         Vector                      pi;
+        std::vector<uint64_t>       stateHashes;
         size_t                      n = 0;
         std::string                 name;
         bool                        isSparse = true;
