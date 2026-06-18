@@ -1,0 +1,56 @@
+section	statistic	value
+summary	numTrees	2027025
+summary	numEdges	127702575
+summary	meanDegree	126.0000000000
+local	numLocalPeaks	3
+local	posteriorMassOfLocalPeaks	0.2683741585
+local	meanUphillFraction	0.5010764334
+local	posteriorWeightedMeanUphillFraction	0.0149769985
+local	meanBestNeighborLnLDifference	38.5677537490
+local	posteriorWeightedMeanBestNeighborLnLDifference	0.5368067836
+local	meanNeighborAbsLnLDifference	11.2810313365
+local	posteriorWeightedMeanNeighborAbsLnLDifference	21.5690271465
+basin	numPeaks	3
+basin	numPeaksMassGreater01	1
+basin	numPeaksMassGreater05	1
+basin	largestBasinSize	1164058
+basin	largestBasinMass	0.9993615822
+basin	basinMassEntropy	0.0053347510
+basin	effectiveNumBasins	1.0053490062
+basin	mapTreeHash	4486680833199316427
+basin	mapPeakHash	4486680833199316427
+basin	mapPeakId	0
+basin	mapBasinMass	0.9993615822
+basin	posteriorMassOutsideMapBasin	0.0006384178
+ascent	meanAscentLength	5.9315691716
+ascent	posteriorWeightedMeanAscentLength	0.7383311266
+ascent	meanAscentLengthCredible95	0.8571428571
+ascent	posteriorWeightedMeanAscentLengthCredible95	0.7188163328
+ascent	maxAscentLength	13
+credible95	credible95NumTrees	7
+credible95	credible95Mass	0.9525415589
+credible95	credible95NumComponents	1
+credible95	credible95LargestComponentSize	7
+credible95	credible95LargestComponentMass	0.9525415589
+credible95	credible95MapComponentSize	7
+credible95	credible95MapComponentMass	0.9525415589
+barrier	basinGraphEdges	3
+barrier	meanBasinGraphDegree	2.0000000000
+barrier	mapBasinGraphDegree	2
+barrier	basinGraphConnected	1
+barrier	minBarrierFromMap	11.3123702208
+barrier	meanBarrier	10.5368009147
+barrier	posteriorWeightedMeanBarrier	8.2044641032
+barrier	maxBarrier	25.8338545958
+
+# peaks
+peakId	peakHash	peakTreeProbability	basinNumTrees	basinPosteriorMass
+0	4486680833199316427	0.2678391286	1164058	0.9993615822
+1	1003474530184899753	0.0005350296	799792	0.0006384175
+2	4035451743491366184	0.0000000003	63175	0.0000000003
+
+# saddles
+peakId1	peakId2	peakHash1	peakHash2	saddleTree1	saddleTree2	saddleLnL	saddleProbability	barrierFromPeak1	barrierFromPeak2
+1	0	1003474530184899753	4486680833199316427	11440909785542963018	14134854855257055508	-6178.5458984375	0.0000032724	5.0965504721	11.3123702208
+1	2	1003474530184899753	4035451743491366184	4035451743491366184	8611240598254181594	-6188.5097656250	0.0000000002	15.0604176596	0.6799976761
+2	0	4035451743491366184	4486680833199316427	9624339878969836924	15606247590098063751	-6193.0673828125	0.0000000000	5.2376148636	25.8338545958
