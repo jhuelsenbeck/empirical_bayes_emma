@@ -17,11 +17,13 @@
 
 namespace {
 
-double quietNaNValue() {
+double quietNaNValue(void) {
+
     return std::numeric_limits<double>::quiet_NaN();
 }
 
 bool finitePositive(double x) {
+
     return std::isfinite(x) && x > 0.0;
 }
 
@@ -223,7 +225,7 @@ bool MarkovChainAnalyzer::checkDetailedBalance(double tol) const {
     return info.reversible;
 }
 
-MarkovChainAnalyzer::DetailedBalanceInfo MarkovChainAnalyzer::computeDetailedBalanceInfo(double tol) const {
+DetailedBalanceInfo MarkovChainAnalyzer::computeDetailedBalanceInfo(double tol) const {
 
     DetailedBalanceInfo info;
     if (n > detailedBalanceStateLimit) 
@@ -389,7 +391,7 @@ size_t MarkovChainAnalyzer::countReachableReverse(Eigen::Index start, double thr
     return count;
 }
 
-MarkovChainAnalyzer::IrreducibilityInfo MarkovChainAnalyzer::computeIrreducibilityInfo(double threshold, double tinyLeaveProb) const {
+IrreducibilityInfo MarkovChainAnalyzer::computeIrreducibilityInfo(double threshold, double tinyLeaveProb) const {
 
     IrreducibilityInfo info;
     info.threshold = threshold;
@@ -484,8 +486,7 @@ std::vector<double> MarkovChainAnalyzer::defaultIrreducibilityThresholds(void) {
     return {0.0, 1e-16, 1e-14, 1e-12, 1e-10, 1e-8, 1e-6};
 }
 
-MarkovChainAnalyzer::ThresholdedIrreducibilityInfo
-MarkovChainAnalyzer::computeThresholdedIrreducibilityInfo(const std::vector<double>& thresholds, double tinyLeaveProb) const {
+ThresholdedIrreducibilityInfo MarkovChainAnalyzer::computeThresholdedIrreducibilityInfo(const std::vector<double>& thresholds, double tinyLeaveProb) const {
 
     ThresholdedIrreducibilityInfo summary;
     summary.thresholds = thresholds;
@@ -503,8 +504,7 @@ MarkovChainAnalyzer::computeThresholdedIrreducibilityInfo(const std::vector<doub
     return summary;
 }
 
-MarkovChainAnalyzer::TransitionProbabilityInfo
-MarkovChainAnalyzer::computeTransitionProbabilityInfo(const std::vector<double>& thresholds) const {
+TransitionProbabilityInfo MarkovChainAnalyzer::computeTransitionProbabilityInfo(const std::vector<double>& thresholds) const {
 
     TransitionProbabilityInfo info;
     info.thresholds = thresholds;
@@ -622,7 +622,7 @@ void MarkovChainAnalyzer::finalizeSpectralInfo(SpectralInfo& info) {
         }
 }
 
-MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfo(void) const {
+SpectralInfo MarkovChainAnalyzer::computeSpectralInfo(void) const {
 
     if (n > denseStateLimit) 
         {
@@ -668,7 +668,7 @@ MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfo(void)
     return info;
 }
 
-MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
+SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
 
     if (!isSparse || n <= denseStateLimit)
         return computeSpectralInfo();
@@ -677,10 +677,11 @@ MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse
     bestInfo.computed_sparse = true;
     bestInfo.spectral_status = "not_run";
 
-    if (n < 2) {
+    if (n < 2) 
+        {
         bestInfo.spectral_status = "too_few_states";
         return bestInfo;
-    }
+        }
 
     nev = std::max(2, nev);
     nev = std::min(nev, static_cast<int>(n) - 1);
@@ -705,14 +706,13 @@ MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse
     double bestResidual = std::numeric_limits<double>::infinity();
     int attemptNumber = 0;
 
-    for (const SolverAttempt& attempt : attempts) {
-        ++attemptNumber;
+    for (const SolverAttempt& attempt : attempts) 
+        {
+        attemptNumber++;
 
         Spectra::GenEigsSolver<Op> eigs(op, nev, attempt.ncv);
         eigs.init();
-        int nconv = static_cast<int>(eigs.compute(Spectra::SortRule::LargestMagn,
-                                                  attempt.maxit,
-                                                  attempt.tol));
+        int nconv = static_cast<int>(eigs.compute(Spectra::SortRule::LargestMagn, attempt.maxit, attempt.tol));
 
         SpectralInfo info;
         info.computed_sparse = true;
@@ -723,11 +723,12 @@ MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse
         info.num_solver_attempts = attemptNumber;
         info.spectral_status = "insufficient_converged_eigenvalues";
 
-        if (nconv < 2) {
+        if (nconv < 2) 
+            {
             if (nconv > bestInfo.n_converged)
                 bestInfo = info;
             continue;
-        }
+            }
 
         Eigen::VectorXcd evals_complex = eigs.eigenvalues();
         Eigen::MatrixXcd evecs_complex = eigs.eigenvectors();
@@ -740,35 +741,37 @@ MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse
 
         std::vector<EigenPairRecord> ev;
         ev.reserve(static_cast<size_t>(evals_complex.size()));
-        for (Eigen::Index i = 0; i < evals_complex.size(); ++i)
+        for (Eigen::Index i = 0; i < evals_complex.size(); i++)
             ev.push_back({std::abs(evals_complex(i)), evals_complex(i), i});
         std::sort(ev.begin(), ev.end(), [](const auto& a, const auto& b) { return a.modulus > b.modulus; });
 
         Eigen::Index m = static_cast<Eigen::Index>(ev.size());
         info.eigenvalues_complex.resize(m);
         info.eigenvalue_moduli.resize(m);
-        for (Eigen::Index i = 0; i < m; ++i) {
+        for (Eigen::Index i = 0; i < m; i++) 
+            {
             info.eigenvalue_moduli(i) = ev[static_cast<size_t>(i)].modulus;
             info.eigenvalues_complex(i) = ev[static_cast<size_t>(i)].value;
             if (std::abs(ev[static_cast<size_t>(i)].value.imag()) > 1e-10)
                 info.has_complex_eigenvalues = true;
             if (std::abs(ev[static_cast<size_t>(i)].value - std::complex<double>(1.0, 0.0)) < 1e-8)
                 ++info.multiplicity_of_1;
-        }
+            }
 
         finalizeSpectralInfo(info);
 
         // Residual check: ||P v - lambda v|| / ||v|| for the converged eigenpairs.
         // This is the most important guard against silently using bad eigenvalues.
         double maxResidual = 0.0;
-        for (Eigen::Index k = 0; k < m; ++k) {
+        for (Eigen::Index k = 0; k < m; k++) 
+            {
             Eigen::Index original = ev[static_cast<size_t>(k)].original_index;
             Eigen::VectorXcd v = evecs_complex.col(original);
             Eigen::VectorXcd Pv = P_sparse * v;
             double denom = std::max(v.norm(), std::numeric_limits<double>::min());
             double resid = (Pv - ev[static_cast<size_t>(k)].value * v).norm() / denom;
             maxResidual = std::max(maxResidual, resid);
-        }
+            }
         info.max_eigen_residual = maxResidual;
         info.lambda1_error = (m > 0) ? std::abs(info.eigenvalues_complex(0) - std::complex<double>(1.0, 0.0))
                                     : std::numeric_limits<double>::quiet_NaN();
@@ -779,10 +782,11 @@ MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse
         bool lambda2OK = std::isfinite(info.lambda2_abs) && info.lambda2_abs <= 1.0 + 1e-7;
 
         info.spectral_valid = enough && lambda1OK && residualOK && lambda2OK;
-        if (info.spectral_valid) {
+        if (info.spectral_valid) 
+            {
             info.spectral_status = "ok";
             return info;
-        }
+            }
 
         if (!lambda1OK)
             info.spectral_status = "dominant_eigenvalue_not_close_to_one";
@@ -793,13 +797,15 @@ MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse
         else
             info.spectral_status = "invalid_unknown_reason";
 
-        if (maxResidual < bestResidual || bestInfo.n_converged < 2) {
+        if (maxResidual < bestResidual || bestInfo.n_converged < 2) 
+            {
             bestResidual = maxResidual;
             bestInfo = info;
+            }
         }
-    }
 
-    if (!bestInfo.spectral_valid) {
+    if (!bestInfo.spectral_valid) 
+        {
         std::cerr << "Warning: sparse eigen calculation unreliable for " << name
                   << " (status=" << bestInfo.spectral_status
                   << ", converged=" << bestInfo.n_converged
@@ -810,13 +816,13 @@ MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse
         bestInfo.lambda2_abs = quietNaNValue();
         bestInfo.relaxation_time = quietNaNValue();
         bestInfo.worst_case_iact = quietNaNValue();
-    }
+        }
 
     return bestInfo;
 }
 
 
-MarkovChainAnalyzer::SpectralInfo MarkovChainAnalyzer::getSpectralInfo(int nev) const {
+SpectralInfo MarkovChainAnalyzer::getSpectralInfo(int nev) const {
 
     nev = std::max(2, nev);
     if (spectralCacheValid && spectralCacheNev >= nev)
@@ -846,13 +852,13 @@ MarkovChainAnalyzer::DenseMatrix MarkovChainAnalyzer::computeHittingTimes(void) 
     DenseMatrix Pmat = isSparse ? DenseMatrix(P_sparse) : P_dense;
     DenseMatrix I = DenseMatrix::Identity(N, N);
     DenseMatrix A = I - Pmat;
-    for (Eigen::Index i = 0; i < N; ++i)
+    for (Eigen::Index i = 0; i < N; i++)
         A.row(i) += pi.transpose();
 
     DenseMatrix Z = A.inverse();
     DenseMatrix M = DenseMatrix::Zero(N, N);
-    for (Eigen::Index i = 0; i < N; ++i)
-        for (Eigen::Index j = 0; j < N; ++j)
+    for (Eigen::Index i = 0; i < N; i++)
+        for (Eigen::Index j = 0; j < N; j++)
             M(i, j) = (i == j) ? 0.0 : (Z(j, j) - Z(i, j)) / pi(j);
     return M;
 }
@@ -883,7 +889,7 @@ double MarkovChainAnalyzer::meanHittingTimeToState(Eigen::Index target) const {
         std::vector<Eigen::Triplet<double>> triplets;
         triplets.reserve(static_cast<size_t>(P_sparse.nonZeros() + N));
         ensureRowSparse();
-        for (Eigen::Index i = 0; i < N; ++i) 
+        for (Eigen::Index i = 0; i < N; i++) 
             {
             if (i == target) 
                 {
@@ -939,7 +945,7 @@ double MarkovChainAnalyzer::meanHittingTimeToSet(const std::vector<Eigen::Index>
             isTarget[static_cast<size_t>(idx)] = 1;
 
     Vector b = Vector::Ones(N);
-    for (Eigen::Index i = 0; i < N; ++i)
+    for (Eigen::Index i = 0; i < N; i++)
         if (isTarget[static_cast<size_t>(i)])
             b(i) = 0.0;
 
@@ -949,7 +955,7 @@ double MarkovChainAnalyzer::meanHittingTimeToSet(const std::vector<Eigen::Index>
         std::vector<Eigen::Triplet<double>> triplets;
         triplets.reserve(static_cast<size_t>(P_sparse.nonZeros() + N));
         ensureRowSparse();
-        for (Eigen::Index i = 0; i < N; ++i) 
+        for (Eigen::Index i = 0; i < N; i++) 
             {
             if (isTarget[static_cast<size_t>(i)]) 
                 {
@@ -975,7 +981,7 @@ double MarkovChainAnalyzer::meanHittingTimeToSet(const std::vector<Eigen::Index>
     else 
         {
         DenseMatrix A = DenseMatrix::Identity(N, N) - P_dense;
-        for (Eigen::Index i = 0; i < N; ++i) 
+        for (Eigen::Index i = 0; i < N; i++) 
             {
             if (isTarget[static_cast<size_t>(i)]) 
                 {
@@ -1017,7 +1023,7 @@ double MarkovChainAnalyzer::entropyRate(void) const {
     if (isSparse) 
         {
         ensureRowSparse();
-        for (Eigen::Index i = 0; i < N; ++i) 
+        for (Eigen::Index i = 0; i < N; i++) 
             {
             for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it) 
                 {
@@ -1029,8 +1035,8 @@ double MarkovChainAnalyzer::entropyRate(void) const {
         } 
     else 
         {
-        for (Eigen::Index i = 0; i < N; ++i)
-            for (Eigen::Index j = 0; j < N; ++j)
+        for (Eigen::Index i = 0; i < N; i++)
+            for (Eigen::Index j = 0; j < N; j++)
                 if (P_dense(i, j) > 0.0)
                     H -= pi(i) * P_dense(i, j) * std::log(P_dense(i, j));
         }
@@ -1048,7 +1054,7 @@ double MarkovChainAnalyzer::kemenyConstant(void) const {
 
     SpectralInfo spec = computeSpectralInfo();
     std::complex<double> K(0.0, 0.0);
-    for (Eigen::Index i = 0; i < spec.eigenvalues_complex.size(); ++i) 
+    for (Eigen::Index i = 0; i < spec.eigenvalues_complex.size(); i++) 
         {
         std::complex<double> lambda = spec.eigenvalues_complex(i);
         if (std::abs(lambda - std::complex<double>(1.0, 0.0)) < 1e-8)
@@ -1065,7 +1071,7 @@ double MarkovChainAnalyzer::approximateKemenyConstant(int nev) const {
         return std::numeric_limits<double>::quiet_NaN();
 
     std::complex<double> K(0.0, 0.0);
-    for (Eigen::Index i = 0; i < spec.eigenvalues_complex.size(); ++i) 
+    for (Eigen::Index i = 0; i < spec.eigenvalues_complex.size(); i++) 
         {
         std::complex<double> lambda = spec.eigenvalues_complex(i);
         if (std::abs(lambda - std::complex<double>(1.0, 0.0)) < 1e-8)
@@ -1111,7 +1117,7 @@ double MarkovChainAnalyzer::conductanceForSet(const std::vector<Eigen::Index>& s
             inSet[static_cast<size_t>(idx)] = 1;
 
     double piA = 0.0;
-    for (Eigen::Index i = 0; i < N; ++i)
+    for (Eigen::Index i = 0; i < N; i++)
         if (inSet[static_cast<size_t>(i)])
             piA += pi(i);
     double denom = std::min(piA, 1.0 - piA);
@@ -1122,7 +1128,7 @@ double MarkovChainAnalyzer::conductanceForSet(const std::vector<Eigen::Index>& s
     if (isSparse) 
         {
         ensureRowSparse();
-        for (Eigen::Index i = 0; i < N; ++i) 
+        for (Eigen::Index i = 0; i < N; i++) 
             {
             if (!inSet[static_cast<size_t>(i)]) continue;
             for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it)

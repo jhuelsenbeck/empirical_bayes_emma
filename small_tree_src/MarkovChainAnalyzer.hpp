@@ -18,6 +18,78 @@
 
 class TreeCache;
 
+struct IrreducibilityInfo {
+
+    bool            irreducible = false;
+    double          threshold = 0.0;
+    size_t          states_reachable_from_0 = 0;
+    size_t          states_that_can_reach_0 = 0;
+    size_t          num_states = 0;
+    size_t          min_out_degree = 0;
+    size_t          max_out_degree = 0;
+    double          min_leave_probability = std::numeric_limits<double>::quiet_NaN();
+    size_t          num_states_with_zero_out_degree = 0;
+    size_t          num_states_with_tiny_leave_probability = 0;
+};
+
+struct ThresholdedIrreducibilityInfo {
+
+    std::vector<double> thresholds;
+    std::vector<IrreducibilityInfo> results;
+    double          largest_threshold_irreducible = std::numeric_limits<double>::quiet_NaN();
+    bool            irreducible_at_zero = false;
+};
+
+struct DetailedBalanceInfo {
+
+    bool            reversible = false;
+    bool            skipped = false;
+    double          max_abs_error = 0.0;
+    double          sum_abs_error = 0.0;
+    double          max_relative_error = 0.0;
+};
+
+struct TransitionProbabilityInfo {
+
+    size_t                  num_positive_offdiag_transitions = 0;
+    double                  min_positive_offdiag_transition = std::numeric_limits<double>::quiet_NaN();
+    double                  max_offdiag_transition = std::numeric_limits<double>::quiet_NaN();
+    double                  mean_positive_offdiag_transition = std::numeric_limits<double>::quiet_NaN();
+    double                  min_leave_probability = std::numeric_limits<double>::quiet_NaN();
+    double                  max_leave_probability = std::numeric_limits<double>::quiet_NaN();
+    double                  mean_leave_probability = std::numeric_limits<double>::quiet_NaN();
+    size_t                  num_states_with_zero_leave_probability = 0;
+    std::vector<double>     thresholds;
+    std::vector<size_t>     num_transitions_le_threshold;
+    std::vector<size_t>     num_states_leave_le_threshold;
+};
+
+struct SpectralInfo {
+
+    double                  spectral_gap = std::numeric_limits<double>::quiet_NaN();
+    double                  lambda2_abs = std::numeric_limits<double>::quiet_NaN();
+    double                  relaxation_time = std::numeric_limits<double>::quiet_NaN();
+    double                  worst_case_iact = std::numeric_limits<double>::quiet_NaN();
+    Eigen::VectorXcd        eigenvalues_complex;
+    Eigen::VectorXd         eigenvalue_moduli;
+    Eigen::Index            multiplicity_of_1 = 0;
+    bool                    has_complex_eigenvalues = false;
+    bool                    computed_sparse = false;
+    int                     n_converged = 0;
+
+    // Robustness diagnostics for iterative sparse eigensolves.
+    bool                    spectral_valid = false;
+    std::string             spectral_status = "not_computed";
+    double                  max_eigen_residual = std::numeric_limits<double>::quiet_NaN();
+    double                  lambda1_error = std::numeric_limits<double>::quiet_NaN();
+    int                     ncv_used = 0;
+    int                     max_iterations_used = 0;
+    double                  tolerance_used = std::numeric_limits<double>::quiet_NaN();
+    int                     num_solver_attempts = 0;
+};
+
+
+
 class MarkovChainAnalyzer {
 
     public:
@@ -34,88 +106,19 @@ class MarkovChainAnalyzer {
         explicit            MarkovChainAnalyzer(TreeCache* cache, std::string nme, bool useSparse = true);
                             MarkovChainAnalyzer(const SparseMatrix& P, const Vector& pi);
                             MarkovChainAnalyzer(const DenseMatrix& P, const Vector& pi);
-
         double              stationaryDiscrepancy(void) const;
         bool                verifyStationary(double tol = 1e-8) const;
         bool                checkDetailedBalance(double tol = 1e-8) const;
-
-        struct DetailedBalanceInfo {
-            bool            reversible = false;
-            bool            skipped = false;
-            double          max_abs_error = 0.0;
-            double          sum_abs_error = 0.0;
-            double          max_relative_error = 0.0;
-        };
         DetailedBalanceInfo computeDetailedBalanceInfo(double tol = 1e-8) const;
-
-        struct IrreducibilityInfo {
-            bool            irreducible = false;
-            double          threshold = 0.0;
-            size_t          states_reachable_from_0 = 0;
-            size_t          states_that_can_reach_0 = 0;
-            size_t          num_states = 0;
-            size_t          min_out_degree = 0;
-            size_t          max_out_degree = 0;
-            double          min_leave_probability = std::numeric_limits<double>::quiet_NaN();
-            size_t          num_states_with_zero_out_degree = 0;
-            size_t          num_states_with_tiny_leave_probability = 0;
-        };
-        IrreducibilityInfo computeIrreducibilityInfo(double threshold = 0.0, double tinyLeaveProb = 1e-14) const;
+        IrreducibilityInfo  computeIrreducibilityInfo(double threshold = 0.0, double tinyLeaveProb = 1e-14) const;
         bool                checkIrreducible(double threshold = 0.0, std::ostream& os = std::cout) const;
         static std::vector<double> defaultIrreducibilityThresholds(void);
-
-        struct ThresholdedIrreducibilityInfo {
-            std::vector<double> thresholds;
-            std::vector<IrreducibilityInfo> results;
-            double          largest_threshold_irreducible = std::numeric_limits<double>::quiet_NaN();
-            bool            irreducible_at_zero = false;
-        };
-        ThresholdedIrreducibilityInfo computeThresholdedIrreducibilityInfo(const std::vector<double>& thresholds = defaultIrreducibilityThresholds(),
-                                                                           double tinyLeaveProb = 1e-14) const;
-
-        struct TransitionProbabilityInfo {
-            size_t                  num_positive_offdiag_transitions = 0;
-            double                  min_positive_offdiag_transition = std::numeric_limits<double>::quiet_NaN();
-            double                  max_offdiag_transition = std::numeric_limits<double>::quiet_NaN();
-            double                  mean_positive_offdiag_transition = std::numeric_limits<double>::quiet_NaN();
-            double                  min_leave_probability = std::numeric_limits<double>::quiet_NaN();
-            double                  max_leave_probability = std::numeric_limits<double>::quiet_NaN();
-            double                  mean_leave_probability = std::numeric_limits<double>::quiet_NaN();
-            size_t                  num_states_with_zero_leave_probability = 0;
-            std::vector<double>     thresholds;
-            std::vector<size_t>     num_transitions_le_threshold;
-            std::vector<size_t>     num_states_leave_le_threshold;
-        };
+        ThresholdedIrreducibilityInfo computeThresholdedIrreducibilityInfo(const std::vector<double>& thresholds = defaultIrreducibilityThresholds(), double tinyLeaveProb = 1e-14) const;
         TransitionProbabilityInfo   computeTransitionProbabilityInfo(const std::vector<double>& thresholds = defaultIrreducibilityThresholds()) const;
-
-        struct SpectralInfo {
-            double                  spectral_gap = std::numeric_limits<double>::quiet_NaN();
-            double                  lambda2_abs = std::numeric_limits<double>::quiet_NaN();
-            double                  relaxation_time = std::numeric_limits<double>::quiet_NaN();
-            double                  worst_case_iact = std::numeric_limits<double>::quiet_NaN();
-            Eigen::VectorXcd        eigenvalues_complex;
-            Vector                  eigenvalue_moduli;
-            Eigen::Index            multiplicity_of_1 = 0;
-            bool                    has_complex_eigenvalues = false;
-            bool                    computed_sparse = false;
-            int                     n_converged = 0;
-
-            // Robustness diagnostics for iterative sparse eigensolves.
-            bool                    spectral_valid = false;
-            std::string             spectral_status = "not_computed";
-            double                  max_eigen_residual = std::numeric_limits<double>::quiet_NaN();
-            double                  lambda1_error = std::numeric_limits<double>::quiet_NaN();
-            int                     ncv_used = 0;
-            int                     max_iterations_used = 0;
-            double                  tolerance_used = std::numeric_limits<double>::quiet_NaN();
-            int                     num_solver_attempts = 0;
-        };
-        
         SpectralInfo                computeSpectralInfo(void) const;
         SpectralInfo                computeSpectralInfoSparse(int nev = 4) const;
         SpectralInfo                getSpectralInfo(int nev = 4) const;
         void                        clearSpectralCache(void) const;
-
         DenseMatrix                 computeHittingTimes(void) const;
         Eigen::Index                getMAPTreeIndex(void) const;
         double                      meanHittingTimeToMAP(void) const;
@@ -123,7 +126,6 @@ class MarkovChainAnalyzer {
         double                      meanHittingTimeToSet(const std::vector<Eigen::Index>& targets) const;
         double                      meanHittingTimeToPosteriorMass(double targetMass = 0.95) const;
         Vector                      meanReturnTimes(void) const;
-
         double                      averageAcceptanceRate(void) const;
         double                      entropyRate(void) const;
         double                      kemenyConstant(void) const;
@@ -135,33 +137,23 @@ class MarkovChainAnalyzer {
         double                      conductanceForSet(const std::vector<Eigen::Index>& set) const;
         double                      posteriorSweepConductance(void) const;
         double                      eigenvectorSweepConductance(size_t maxDenseStates = 10000) const;
-
         static void                 writeTsvHeader(std::ostream& os);
         void                        writeTsvRow(std::ostream& os, const std::string& moveType, double power, double epsilon = 1e-6) const;
-
         void                        printExtendedReport(std::ostream& os = std::cout) const;
         void                        printReport(std::ostream& os = std::cout) const;
-
         const SparseMatrix&         getTransitionMatrixSparse(void) const { return P_sparse; }
         const DenseMatrix&          getTransitionMatrixDense(void) const { return P_dense; }
         const Vector&               getPosterior(void) const { return pi; }
         size_t                      numStates(void) const { return n; }
 
-
-        // Exact/small-state output utilities. Intended for <= 8-taxon analyses
-        // where n = 10395 or smaller. The transition kernel is written in
-        // coordinate format by default because a dense TSV is very large.
-        void                        writeSmallStateAnalysisFiles(const std::string& filePrefix,
-                                                                 bool writeDenseKernel = false,
-                                                                 bool writeFullEigenvectors = true,
-                                                                 bool writeAllPairsHittingTimes = false) const;
-        void                        writeTransitionKernelTsv(const std::string& fileName,
-                                                             bool denseFormat = false) const;
+                                    // Exact/small-state output utilities. Intended for <= 8-taxon analyses
+                                    // where n = 10395 or smaller. The transition kernel is written in
+                                    // coordinate format by default because a dense TSV is very large.
+        void                        writeSmallStateAnalysisFiles(const std::string& filePrefix, bool writeDenseKernel = false, bool writeFullEigenvectors = true, bool writeAllPairsHittingTimes = false) const;
+        void                        writeTransitionKernelTsv(const std::string& fileName, bool denseFormat = false) const;
         void                        writePosteriorTsv(const std::string& fileName) const;
-        void                        writeFullEigenSystemTsv(const std::string& filePrefix,
-                                                            bool writeEigenvectors = true) const;
-        void                        writeSmallHittingTimeFiles(const std::string& filePrefix,
-                                                               bool writeAllPairs = false) const;
+        void                        writeFullEigenSystemTsv(const std::string& filePrefix, bool writeEigenvectors = true) const;
+        void                        writeSmallHittingTimeFiles(const std::string& filePrefix, bool writeAllPairs = false) const;
         const std::vector<uint64_t>& getStateHashes(void) const { return stateHashes; }
 
                                     // tuning knobs for million-state analyses.

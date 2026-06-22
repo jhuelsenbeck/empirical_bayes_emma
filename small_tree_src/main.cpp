@@ -35,7 +35,7 @@ int main(int argc, char* argv[]) {
     settings.readSettings(argc, argv);
     settings.print();
     bool analyticsOnly = true;
-    int numTaxa = 10;
+    int numTaxa = 8;
     int nReps = 50;
     
     // read the alignment file
