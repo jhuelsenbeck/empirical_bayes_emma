@@ -1,5 +1,21 @@
 #NEXUS
 
+[
+@article{Hafner1994,
+  author  = {Hafner, Mark S. and Sudman, Philip D. and Villablanca, Francis X.
+             and Spradling, Theresa A. and Demastes, James W.
+             and Nadler, Steven A.},
+  title   = {Disparate Rates of Molecular Evolution in Cospeciating Hosts
+             and Parasites},
+  journal = {Science},
+  year    = {1994},
+  volume  = {265},
+  number  = {5175},
+  pages   = {1087--1090},
+  doi     = {10.1126/science.8066445}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=379;
    format datatype=dna;

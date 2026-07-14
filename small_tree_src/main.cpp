@@ -5,11 +5,13 @@
 #include "Alignment.hpp"
 #include "BitSetFactory.hpp"
 #include "ExhaustiveSearch.hpp"
+#include "MapTree.hpp"
 #include "MarkovChainAnalyzer.hpp"
 #include "Mcmc.hpp"
 #include "RandomVariable.hpp"
 #include "Threads.hpp"
 #include "TreeCache.hpp"
+#include "TreeKey.hpp"
 #include "TreeLikelihoods.hpp"
 #include "TreeNeighborGenerator.hpp"
 #include "TreeNeighbors.hpp"
@@ -19,7 +21,6 @@
 void generateNeighbors(TreeCache& treeCache, TreeNeighbors& generator, std::string label);
 void printHeader(void);
 std::string powerLabel(double x);
-
 
 
 int main(int argc, char* argv[]) {
@@ -35,14 +36,15 @@ int main(int argc, char* argv[]) {
     settings.readSettings(argc, argv);
     settings.print();
     bool analyticsOnly = true;
-    int numTaxa = 8;
+    int numTaxa = 10;
     int nReps = 50;
     
     // read the alignment file
     Alignment* originalAlignment = new Alignment(settings.getInputFileName());
     Alignment* data = originalAlignment;
     if (originalAlignment->getNumTaxa() > numTaxa)
-        data = new Alignment(*originalAlignment, numTaxa, &rng);
+        data = new Alignment(*originalAlignment, originalAlignment->farthestPointSelection(numTaxa));
+        //data = new Alignment(*originalAlignment, numTaxa, &rng);
     data->print(settings.getOutputFileName() + ".nex");
     if (settings.getNumTwists() > 0)
         data->twist(&rng, settings.getNumTwists());
@@ -54,6 +56,8 @@ int main(int argc, char* argv[]) {
     TreeCache treeCacheNni("NNI");
     TreeLikelihoods treeLikelihoods(&treeCacheNni);
     ExhaustiveSearch exhaustive(data, &treeCacheNni, &threads);
+    TreeKey& treeKeys = TreeKey::treeKey();
+    treeKeys.initialize(&treeCacheNni);
     
     // instantiate tree cache objects for NNI2 and TBR
     TreeCache treeCacheNni2("NNI2");
@@ -91,15 +95,25 @@ int main(int argc, char* argv[]) {
     treeSpaceTbr.printPosterior(settings.getOutputFileName() + ".tbr.true");
     treeSpaceTbr.writeRuggednessStatistics(settings.getOutputFileName() + ".tbr.ruggedness.tsv");
 
+    // find the MAP tree
+    MapTree mapTree(&treeCacheNni);
+            
     // analytics using the kernel of the Markov chain
     std::vector<TreeCache*> caches = { &treeCacheNni, &treeCacheNni2, &treeCacheTbr };
     std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2 };
     bool writeSmallStateFiles = (data->getNumTaxa() <= 8);
+    
     std::string diagnosticsFileName = settings.getOutputFileName() + ".markov.tsv";
     std::ofstream diagnosticsOut(diagnosticsFileName);
     if (!diagnosticsOut)
         throw std::runtime_error("Could not open Markov-chain diagnostics file: " + diagnosticsFileName);
+    std::string efficiencyFileName = settings.getOutputFileName() + ".eff.tsv";
+    std::ofstream effOut(efficiencyFileName);
+    if (!effOut)
+        throw std::runtime_error("Could not open Markov-chain efficiency file: " + efficiencyFileName);
     MarkovChainAnalyzer::writeTsvHeader(diagnosticsOut);
+    MarkovChainAnalyzer::writeEfficiencyTsvHeader(effOut);
+
     for (double power : powers)
         {
         for (size_t i=0; i<caches.size(); i++)
@@ -110,9 +124,20 @@ int main(int argc, char* argv[]) {
             c->sortNeighborsByLikelihood();
             c->cacheNeighborProposalProbabilities(power);
 
-            MarkovChainAnalyzer analyzer(c, c->getName() + " (" + std::to_string(power) + ")", true); // true -> forces sparse
+            MarkovChainAnalyzer analyzer(&threads, c, c->getName() + " (" + std::to_string(power) + ")", true); // true -> forces sparse
+            analyzer.writeMeanFirstPassageTimesToTree(mapTree.getMapTree(), settings.getOutputFileName() + c->getName() + ".mfpt.tsv");
+            analyzer.writeEfficiencyTsvRow(effOut, c->getName(), power, "MAPtree", analyzer.efficiencyFor(analyzer.indicatorForTree(mapTree.getMapTree())));
+            for (const auto& [part, trees] : mapTree.getPartitions())
+                {
+                std::vector<uint64_t> hashes;
+                hashes.reserve(trees.size());
+                for (TreeInfo* info : trees)
+                    hashes.push_back(info->hash);
+                analyzer.writeEfficiencyTsvRow(effOut, c->getName(), power, mapTree.partitionString(part), analyzer.efficiencyFor(analyzer.indicatorForTrees(hashes)));
+                }
             analyzer.writeTsvRow(diagnosticsOut, c->getName(), power);
             diagnosticsOut.flush();
+            effOut.flush();
 
             if (writeSmallStateFiles)
                 {
@@ -120,7 +145,7 @@ int main(int argc, char* argv[]) {
                 std::cout << "   Writing small-state exact files with prefix " << prefix << "\n";
                 analyzer.writeSmallStateAnalysisFiles(prefix,
                                                        false,  // dense kernel TSV is enormous; coordinate kernel is always written
-                                                       true,   // full right eigenvectors
+                                                        true,  // full right eigenvectors
                                                        false); // all-pairs hitting-time matrix is enormous; MAP and 95% set are written
                 }
             }
@@ -158,6 +183,11 @@ int main(int argc, char* argv[]) {
             Mcmc mcmcmc(&rng, &treeCacheNni, data, true, convergenceFileName);
             mcmcmc.run(label, power, 0, nReps, 4);
             }
+            
+        std::string convergenceFileName = ".conv_Gibbs";
+        std::string label = "MCMC (Gibbs)";
+        Mcmc gibbs(&rng, &treeCacheNni, data, true, convergenceFileName);
+        gibbs.run(label, nReps);
         }
 
     // clean up
@@ -250,3 +280,4 @@ std::string powerLabel(double x) {
         }
     return s;
 }
+

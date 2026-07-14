@@ -1,5 +1,20 @@
 #NEXUS
 
+[
+@article{Brown1982,
+  author  = {Brown, Wesley M. and Prager, Ellen M. and Wang, Alice
+             and Wilson, Allan C.},
+  title   = {Mitochondrial {DNA} Sequences of Primates:
+             Tempo and Mode of Evolution},
+  journal = {Journal of Molecular Evolution},
+  year    = {1982},
+  volume  = {18},
+  number  = {4},
+  pages   = {225--239},
+  doi     = {10.1007/BF01734101}
+}
+]
+
 begin data;
    dimensions ntax=5 nchar=895;
    format datatype=dna;

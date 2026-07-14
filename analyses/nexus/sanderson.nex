@@ -1,5 +1,19 @@
 #NEXUS
 
+[
+@article{Sanderson2000,
+  author  = {Sanderson, Michael J. and Wojciechowski, Martin F.},
+  title   = {Improved Bootstrap Confidence Limits in Large-Scale Phylogenies,
+             with an Example from {Neo-Astragalus} ({Leguminosae})},
+  journal = {Systematic Biology},
+  year    = {2000},
+  volume  = {49},
+  number  = {4},
+  pages   = {671--685},
+  doi     = {10.1080/106351500750049761}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=686;
    format datatype=dna;

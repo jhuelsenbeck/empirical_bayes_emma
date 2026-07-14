@@ -1,5 +1,20 @@
 #NEXUS
 
+[
+@article{Kusmierski1997,
+  author  = {Kusmierski, Roman and Borgia, Gerald and Uy, Albert
+             and Crozier, Ross H.},
+  title   = {Labile Evolution of Display Traits in Bowerbirds Indicates
+             Reduced Effects of Phylogenetic Constraint},
+  journal = {Proceedings of the Royal Society of London B},
+  year    = {1997},
+  volume  = {264},
+  number  = {1380},
+  pages   = {307--313},
+  doi     = {10.1098/rspb.1997.0044}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=924;
    format datatype=dna;

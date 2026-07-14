@@ -189,6 +189,8 @@ void TreeNeighborGeneratorTBR::generateNeighbors(Tree* tree, std::vector<TreeInf
 
     const std::vector<Node*>& postOrder = tree->getDownPassSequence();
     Node* rootNode = tree->getRoot();
+    uint64_t treeHash = tree->getHash();
+    size_t numSelfSkipped = 0;
     
     for (Node* p : postOrder)
         {
@@ -224,6 +226,21 @@ void TreeNeighborGeneratorTBR::generateNeighbors(Tree* tree, std::vector<TreeInf
                 if (t->getNumNodes() != tree->getNumNodes())
                     Msg::error("Trees have different numbers of nodes");
 
+                // The reconnection that rejoins the two subtrees at the branch
+                // ends that were just bisected reproduces the starting
+                // topology. Skip it: a tree is not its own TBR neighbor.
+                // Without this guard the identity reconnection is stored as a
+                // self-loop, inflating every vertex degree by one (for example
+                // giving degree 3 instead of 2 for the three trees of the N=4
+                // graph). The skipped identities are still counted so that the
+                // enumeration-completeness check below remains valid.
+                if (t->getHash() == treeHash)
+                    {
+                    numSelfSkipped++;
+                    delete t;
+                    continue;
+                    }
+
                 TreeInfo* ti = treeCache->getOrCreateTreeInfo(t);
                 neighbors.push_back(ti);
                 if (ti->hasLnLikelihood == false)
@@ -237,8 +254,10 @@ void TreeNeighborGeneratorTBR::generateNeighbors(Tree* tree, std::vector<TreeInf
         delete t1;
         }
         
-    // check results
-    if (nNeighbors != neighbors.size())
+    // check results. Every enumerated (bisection, reconnection) pair is either
+    // stored as a neighbor or skipped as an identity reconnection, so the two
+    // counts together must equal the analytic count from numTbrNeighbors().
+    if ((size_t)nNeighbors != neighbors.size() + numSelfSkipped)
         Msg::error("Did not generate the expected number of TBR neighbors");
 
 }

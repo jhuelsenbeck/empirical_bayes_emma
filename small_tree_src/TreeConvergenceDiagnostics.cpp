@@ -4,6 +4,8 @@
 #include "Msg.hpp"
 #include "TreeConvergenceDiagnostics.hpp"
 
+
+
 TreeConvergenceDiagnostics::TreeConvergenceDiagnostics(TreeCache* tc) :
     treeCache(tc), credible95Mass(0.0), numCredibleSet95Trees(0) {
 

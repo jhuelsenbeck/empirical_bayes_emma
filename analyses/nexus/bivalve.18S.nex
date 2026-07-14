@@ -1,5 +1,19 @@
 #NEXUS
 
+[
+@article{Adamkewicz1997,
+  author  = {Adamkewicz, S. Laura and Harasewych, M. G. and Blake, Jeffrey
+             and Saudek, Daniel and Bult, Carol J.},
+  title   = {A Molecular Phylogeny of the Bivalve Mollusks},
+  journal = {Molecular Biology and Evolution},
+  year    = {1997},
+  volume  = {14},
+  number  = {6},
+  pages   = {619--629},
+  doi     = {10.1093/oxfordjournals.molbev.a025801}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=756;
    format datatype=dna;

@@ -1,5 +1,22 @@
 #NEXUS
 
+[
+@article{Savolainen2000,
+  author  = {Savolainen, Vincent and Chase, Mark W. and Hoot, Sara B.
+             and Morton, Cynthia M. and Soltis, Douglas E. and Bayer, Clemens
+             and Fay, Michael F. and de Bruijn, Anette Y. and Sullivan, Steve
+             and Qiu, Yin-Long},
+  title   = {Phylogenetics of Flowering Plants Based on Combined Analysis of
+             Plastid {atpB} and {rbcL} Gene Sequences},
+  journal = {Systematic Biology},
+  year    = {2000},
+  volume  = {49},
+  number  = {2},
+  pages   = {306--362},
+  doi     = {10.1093/sysbio/49.2.306}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=1428;
    format datatype=dna;

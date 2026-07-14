@@ -1,5 +1,30 @@
 #NEXUS
 
+[
+@article{Messier1997,
+  author  = {Messier, Walter and Stewart, Caro-Beth},
+  title   = {Episodic Adaptive Evolution of Primate Lysozymes},
+  journal = {Nature},
+  year    = {1997},
+  volume  = {385},
+  number  = {6612},
+  pages   = {151--154},
+  doi     = {10.1038/385151a0}
+}
+
+@article{Yang1998,
+  author  = {Yang, Ziheng},
+  title   = {Likelihood Ratio Tests for Detecting Positive Selection and
+             Application to Primate Lysozyme Evolution},
+  journal = {Molecular Biology and Evolution},
+  year    = {1998},
+  volume  = {15},
+  number  = {5},
+  pages   = {568--573},
+  doi     = {10.1093/oxfordjournals.molbev.a025957}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=390;
    format datatype=dna;

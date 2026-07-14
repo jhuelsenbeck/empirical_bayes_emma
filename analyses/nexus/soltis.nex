@@ -1,5 +1,24 @@
 #NEXUS
 
+[
+@article{Soltis2000,
+  author  = {Soltis, Douglas E. and Soltis, Pamela S. and Chase, Mark W.
+             and Mort, Mark E. and Albach, Dirk C. and Zanis, Michael
+             and Savolainen, Vincent and Hahn, William H. and Hoot, Sara B.
+             and Fay, Michael F. and Axtell, Michael and Swensen, Susan M.
+             and Prince, Linda M. and Kress, W. John and Nixon, Kevin C.
+             and Farris, James S.},
+  title   = {Angiosperm Phylogeny Inferred from 18{S} {rDNA}, {rbcL},
+             and {atpB} Sequences},
+  journal = {Botanical Journal of the Linnean Society},
+  year    = {2000},
+  volume  = {133},
+  number  = {4},
+  pages   = {381--461},
+  doi     = {10.1006/bojl.2000.0380}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=4811;
    format datatype=dna;

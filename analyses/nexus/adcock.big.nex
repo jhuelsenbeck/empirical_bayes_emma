@@ -1,5 +1,21 @@
 #NEXUS
 
+[
+@article{Adcock2001,
+  author  = {Adcock, Gregory J. and Dennis, Elizabeth S. and Easteal, Simon
+             and Huttley, Gavin A. and Jermiin, Lars S. and Peacock, W. James
+             and Thorne, Alan},
+  title   = {Mitochondrial {DNA} Sequences in Ancient {Australians}:
+             Implications for Modern Human Origins},
+  journal = {Proceedings of the National Academy of Sciences USA},
+  year    = {2001},
+  volume  = {98},
+  number  = {2},
+  pages   = {537--542},
+  doi     = {10.1073/pnas.98.2.537}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=365;
    format datatype=dna;

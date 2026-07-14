@@ -1,5 +1,20 @@
 #NEXUS
 
+[
+@article{Price2000,
+  author  = {Price, Trevor and Lovette, Irby J. and Bermingham, Eldredge
+             and Gibbs, H. Lisle and Richman, Adam D.},
+  title   = {The Imprint of History on Communities of {North American}
+             and {Asian} Warblers},
+  journal = {The American Naturalist},
+  year    = {2000},
+  volume  = {156},
+  number  = {4},
+  pages   = {354--367},
+  doi     = {10.1086/303397}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=1153;
    format datatype=dna;

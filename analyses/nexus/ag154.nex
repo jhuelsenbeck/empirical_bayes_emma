@@ -1,5 +1,20 @@
 #NEXUS
 
+[
+@article{Moncalvo2000,
+  author  = {Moncalvo, Jean-Marc and Lutzoni, Fran{\c{c}}ois M.
+             and Rehner, Stephen A. and Johnson, Jacqui and Vilgalys, Rytas},
+  title   = {Phylogenetic Relationships of Agaric Fungi Based on Nuclear
+             Large Subunit Ribosomal {DNA} Sequences},
+  journal = {Systematic Biology},
+  year    = {2000},
+  volume  = {49},
+  number  = {2},
+  pages   = {278--305},
+  doi     = {10.1093/sysbio/49.2.278}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=825;
    format datatype=dna;

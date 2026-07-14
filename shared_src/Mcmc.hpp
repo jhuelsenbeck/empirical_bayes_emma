@@ -20,19 +20,21 @@ class Mcmc {
     public:
                                     Mcmc(RandomVariable* r, TreeCache* tc, Alignment* a, bool tf=false, std::string cfn="");
                                    ~Mcmc(void);
+        void                        run(std::string label, int numRuns);
         void                        run(std::string label, double power, int nNeighbors);
         void                        run(std::string label, double power, int nNeighbors, int numRuns);
         void                        run(std::string label, double power, int nNeighbors, int numRuns, int numHeatedChains);
 
     private:
         std::pair<int,int>          chooseChains(int numChains);
+        uint64_t                    chooseGibbs(std::vector<std::pair<uint64_t,double>>& probs);
         TreeInfo*                   chooseInitialTreeInfo(void);
         TreeInfo*                   chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbability);
-        TreeInfo*                   chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbability, int n);
+        TreeInfo*                   chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbability, int n, double power);
         int                         coldChainIndex(std::vector<int>& chainIndices);
         void                        deleteSamplesAndPartitions(void);
         double                      findTreeProbability(TreeInfo* fromInfo, uint64_t toHash);
-        double                      findTreeProbability(TreeInfo* fromInfo, uint64_t toHash, int n);
+        double                      findTreeProbability(TreeInfo* fromInfo, uint64_t toHash, int n, double power);
         LikelihoodCalculator*       getCalculator(void);
         double                      heat(int i, double temperature);
         void                        openConvergenceLog(size_t numReplicates);
@@ -55,7 +57,7 @@ class Mcmc {
 
         std::ofstream               convergenceLog;
         std::vector<TreeSamples*>   samples;
-        std::set<int>               subsetIndices;
+        std::vector<int>            subsetIndices;
 
         std::vector<LikelihoodCalculator*> allocatedCalculators;
         std::vector<LikelihoodCalculator*> calculatorPool;

@@ -1,5 +1,19 @@
 #NEXUS
 
+[
+@article{Krings1997,
+  author  = {Krings, Matthias and Stone, Anne and Schmitz, Ralf W.
+             and Krainitzki, Heike and Stoneking, Mark and P{\"a}{\"a}bo, Svante},
+  title   = {Neandertal {DNA} Sequences and the Origin of Modern Humans},
+  journal = {Cell},
+  year    = {1997},
+  volume  = {90},
+  number  = {1},
+  pages   = {19--30},
+  doi     = {10.1016/S0092-8674(00)80310-4}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=333;
    format datatype=dna;

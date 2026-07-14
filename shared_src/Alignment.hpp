@@ -18,12 +18,14 @@ class Alignment {
                                                     Alignment(std::string fileName);
                                                     Alignment(std::vector<std::string> tn, int nr, int nc);
                                                     Alignment(Alignment& a, int nt, RandomVariable* rng);
+                                                    Alignment(Alignment& a, std::vector<size_t> taxonIndices);
                                                     Alignment(std::vector<std::string> tn, std::string newickString, int nc, RandomVariable* rng);
                                                    ~Alignment(void);
         int&                                        operator()(size_t r, size_t c) { return this->matrix[r][c]; }
         const int&                                  operator()(size_t r, size_t c) const { return this->matrix[r][c]; }
         void                                        compress(void);
         void                                        concatenateTwist(RandomVariable* rng, int nTrees);
+        std::vector<size_t>                         farthestPointSelection(size_t k);
         int                                         getNumTaxa(void) { return numTaxa; }
         int                                         getNumSites(void) { return numSites; }
         int                                         getNumStates(void) { return 4; }
@@ -33,6 +35,7 @@ class Alignment {
         int                                         getTaxonIndex(std::string ns);
         std::vector<std::string>&                   getTaxonNames(void) { return taxonNames; }
         std::string&                                getTaxonName(int i) { return taxonNames[i]; }
+        std::string                                 getTaxonNamesString(void);
         int                                         lengthOfLongestTaxonName(void);
         void                                        listTaxa(void);
         void                                        print(void);

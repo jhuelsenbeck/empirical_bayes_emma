@@ -1,5 +1,18 @@
 #NEXUS
 
+[
+@article{Hayasaka1988,
+  author  = {Hayasaka, Kenji and Gojobori, Takashi and Horai, Satoshi},
+  title   = {Molecular Phylogeny and Evolution of Primate Mitochondrial {DNA}},
+  journal = {Molecular Biology and Evolution},
+  year    = {1988},
+  volume  = {5},
+  number  = {6},
+  pages   = {626--644},
+  doi     = {10.1093/oxfordjournals.molbev.a040524}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=898;
    format datatype=dna;

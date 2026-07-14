@@ -1,5 +1,21 @@
 #NEXUS
 
+[
+@article{Farias1999,
+  author  = {Farias, Izeni P. and Ort{\'i}, Guillermo and Sampaio, Iracilda
+             and Schneider, Horacio and Meyer, Axel},
+  title   = {Mitochondrial {DNA} Phylogeny of the Family {Cichlidae}:
+             Monophyly and Fast Molecular Evolution of the Neotropical
+             Assemblage},
+  journal = {Journal of Molecular Evolution},
+  year    = {1999},
+  volume  = {48},
+  number  = {6},
+  pages   = {703--711},
+  doi     = {10.1007/PL00006514}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=1047;
    format datatype=dna;

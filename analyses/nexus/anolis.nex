@@ -1,5 +1,18 @@
 #NEXUS
 
+[
+@article{Jackman1999,
+  author  = {Jackman, Todd R. and Larson, Allan and de Queiroz, Kevin
+             and Losos, Jonathan B.},
+  title   = {Phylogenetic Relationships and Tempo of Early Diversification
+             in {Anolis} Lizards},
+  journal = {Systematic Biology},
+  year    = {1999},
+  volume  = {48},
+  number  = {2},
+  pages   = {254--285}
+}]
+
 begin data;
    dimensions ntax=10 nchar=1456;
    format datatype=dna;

@@ -1,5 +1,21 @@
 #NEXUS
 
+[
+@article{Whiting1997,
+  author  = {Whiting, Michael F. and Carpenter, James C.
+             and Wheeler, Quentin D. and Wheeler, Ward C.},
+  title   = {The {Strepsiptera} Problem: Phylogeny of the Holometabolous
+             Insect Orders Inferred from 18{S} and 28{S} Ribosomal {DNA}
+             Sequences and Morphology},
+  journal = {Systematic Biology},
+  year    = {1997},
+  volume  = {46},
+  number  = {1},
+  pages   = {1--68},
+  doi     = {10.1093/sysbio/46.1.1}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=902;
    format datatype=dna;

@@ -147,7 +147,13 @@ const std::vector<double>& TreeCache::neighborProposalProbabilities(TreeInfo* in
     for (size_t i=0; i<probs.size(); i++)
         probs[i] *= factor;
 
-    info->neighborProposalPower = power;
+    // Retain the two scalars that define this tree's proposal distribution. They are needed again
+    // when the transition kernel is built, where the REVERSE proposal probability q(i|j) is a
+    // property of j's neighborhood rather than of i's. Recomputing them there would mean two further
+    // passes over every neighborhood in the state space.
+    info->neighborMaxLnL          = maxLnL;
+    info->neighborProposalNormInv = factor;
+    info->neighborProposalPower   = power;
     info->hasNeighborProposalProbabilities = true;
 
     return probs;
@@ -208,6 +214,8 @@ void TreeCache::sortNeighborsByLikelihood(void) {
                   });
 
         info->hasNeighborProposalProbabilities = false;
-        info->neighborProposalPower = std::numeric_limits<double>::quiet_NaN();
+        info->neighborProposalPower            = std::numeric_limits<double>::quiet_NaN();
+        info->neighborMaxLnL                   = std::numeric_limits<double>::quiet_NaN();
+        info->neighborProposalNormInv          = std::numeric_limits<double>::quiet_NaN();
         }
 }

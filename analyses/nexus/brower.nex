@@ -1,5 +1,20 @@
 #NEXUS
 
+[
+@article{Brower1997,
+  author  = {Brower, Andrew V. Z. and Egan, Michael G.},
+  title   = {Cladistic Analysis of {Heliconius} Butterflies and Relatives
+             ({Nymphalidae}: {Heliconiiti}): A Revised Phylogenetic Position
+             for {Eueides} Based on Sequences from {mtDNA} and a Nuclear Gene},
+  journal = {Proceedings of the Royal Society of London B},
+  year    = {1997},
+  volume  = {264},
+  number  = {1384},
+  pages   = {969--977},
+  doi     = {10.1098/rspb.1997.0134}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=378;
    format datatype=dna;

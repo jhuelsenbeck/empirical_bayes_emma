@@ -1,6 +1,7 @@
 #ifndef TreeCache_hpp
 #define TreeCache_hpp
 
+#include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <string>
@@ -26,6 +27,21 @@ struct TreeInfo {
     bool                    hasLnLikelihood = false;
     bool                    hasNeighborProposalProbabilities = false;
     double                  neighborProposalPower = std::numeric_limits<double>::quiet_NaN();
+
+                            // Scalars cached for the benefit of MarkovChainAnalyzer. The index of the
+                            // state that holds this tree in the transition kernel is stored here so
+                            // that an edge of the kernel can be placed without a lookup: the kernel of
+                            // a TBR analysis for ten taxa has some 590 million edges, and a hash lookup
+                            // for each one is a hash lookup too many.
+    int64_t                 stateIndex = -1;
+
+                            // The largest log likelihood among this tree's neighbors, and the
+                            // reciprocal of the normalizing constant of its proposal distribution,
+                            // both for the currently cached power. Together they give the probability
+                            // that this tree proposes any one of its neighbors, in constant time and
+                            // without a second pass over the neighborhood.
+    double                  neighborMaxLnL = std::numeric_limits<double>::quiet_NaN();
+    double                  neighborProposalNormInv = std::numeric_limits<double>::quiet_NaN();
 };
 
 

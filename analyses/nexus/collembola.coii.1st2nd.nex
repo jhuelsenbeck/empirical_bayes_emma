@@ -1,5 +1,20 @@
 #NEXUS
 
+[
+@article{Frati1997,
+  author  = {Frati, Francesco and Simon, Chris and Sullivan, Jack
+             and Swofford, David L.},
+  title   = {Evolution of the Mitochondrial Cytochrome Oxidase {II} Gene
+             in {Collembola}},
+  journal = {Journal of Molecular Evolution},
+  year    = {1997},
+  volume  = {44},
+  number  = {2},
+  pages   = {145--158},
+  doi     = {10.1007/PL00006131}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=456;
    format datatype=dna;

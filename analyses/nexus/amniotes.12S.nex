@@ -1,5 +1,18 @@
 #NEXUS
 
+[
+@article{Hedges1994,
+  author  = {Hedges, S. Blair},
+  title   = {Molecular Evidence for the Origin of Birds},
+  journal = {Proceedings of the National Academy of Sciences USA},
+  year    = {1994},
+  volume  = {91},
+  number  = {7},
+  pages   = {2621--2624},
+  doi     = {10.1073/pnas.91.7.2621}
+}
+]
+
 begin data;
    dimensions ntax=4 nchar=690;
    format datatype=dna;

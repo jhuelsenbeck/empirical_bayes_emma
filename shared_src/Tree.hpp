@@ -38,6 +38,7 @@ class Tree {
         Node*                       getRoot(void) { return root; }
         Node*                       findNodeWithIndex(int idx);
         Node*                       findTaxonNamed(std::string tName);
+        std::unordered_set<uint16_t>    getPartitions(void);
         bool                        hasNode(Node* p);
         void                        initializeDownPassSequence(void);
         void                        markNodesDownFromNode(Node* p);

@@ -1,5 +1,19 @@
 #NEXUS
 
+[
+@article{Page1998,
+  author  = {Page, Roderic D. M. and Lee, Patricia L. M. and Becher, Sabine A.
+             and Griffiths, Richard and Clayton, Dale H.},
+  title   = {A Different Tempo of Mitochondrial {DNA} Evolution in Birds
+             and Their Parasitic Lice},
+  journal = {Molecular Phylogenetics and Evolution},
+  year    = {1998},
+  volume  = {9},
+  number  = {2},
+  pages   = {276--293}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=505;
    format datatype=dna;

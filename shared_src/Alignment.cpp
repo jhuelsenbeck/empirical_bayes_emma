@@ -123,6 +123,32 @@ Alignment::Alignment(Alignment& a, int nt, RandomVariable* rng) :
         }
 }
 
+Alignment::Alignment(Alignment& a, std::vector<size_t> taxonIndices) :
+    matrix(nullptr), patternCount(nullptr), numTaxa(0), numSites(0), isCompressed(false) {
+
+    sort(taxonIndices.begin(),taxonIndices.end());
+
+    numTaxa = (int)taxonIndices.size();
+    numSites = a.numSites;
+
+    matrix = new int*[numTaxa];
+    matrix[0] = new int[numTaxa * numSites];
+    for (size_t i=1; i<numTaxa; i++)
+        matrix[i] = matrix[i-1] + numSites;
+    for (size_t i=0; i<numTaxa; i++)
+        for (size_t j=0; j<numSites; j++)
+            matrix[i][j] = 0;
+    
+    for (int i=0; i<taxonIndices.size(); i++)
+        taxonNames.push_back(a.taxonNames[taxonIndices[i]]);
+
+    for (int i=0; i<numTaxa; i++)
+        {
+        for (int j=0; j<numSites; j++)
+            matrix[i][j] = a.matrix[taxonIndices[i]][j];
+        }
+}
+
 Alignment::Alignment(std::vector<std::string> tn, std::string newickString, int nc, RandomVariable* rng) : 
     matrix(nullptr), patternCount(nullptr), numTaxa(0), numSites(0), isCompressed(false) {
     
@@ -481,6 +507,132 @@ void Alignment::createDnaMatrix(NxsCharactersBlock* charblock) {
         }
 }
 
+
+std::vector<size_t> Alignment::farthestPointSelection(size_t k) {
+
+    std::vector<std::vector<double>> dist;
+    dist.resize(numTaxa);
+    for (size_t i=0; i<numTaxa; i++)
+        dist[i].resize(numTaxa);
+    for (size_t i=0; i<numTaxa; i++)
+        for (size_t j=0; j<numTaxa; j++)
+            dist[i][j] = 0.0;
+        
+    for (size_t i=0; i<numTaxa; i++)
+        {
+        for (size_t j=i+1; j<numTaxa; j++)
+            {
+            int nDiff = 0, nSame = 0;
+            for (size_t c=0; c<numSites; c++)
+                {
+                if (matrix[i][c] != matrix[j][c])
+                    {
+                    if (isCompressed == false)
+                        nDiff += 1;
+                    else 
+                        nDiff += patternCount[c];
+                    }
+                else 
+                    {
+                    if (isCompressed == false)
+                        nSame += 1;
+                    else 
+                        nSame += patternCount[c];
+                    }
+                }
+            double p = (double)nDiff / (nDiff + nSame);
+            double d = -0.75 * log(1.0 - (4.0/3.0)*p);
+            dist[i][j] = d;
+            dist[j][i] = d;
+            }
+        }
+    
+    const size_t n = dist.size();
+
+    if (n == 0)
+        throw std::runtime_error("Distance matrix is empty.");
+
+    if (k == 0)
+        return {};
+
+    if (k > n)
+        throw std::runtime_error("Requested more taxa than available.");
+
+    for (const auto& row : dist)
+        {
+        if (row.size() != n)
+            throw std::runtime_error("Distance matrix must be square.");
+        }
+
+    std::vector<size_t> selected;
+    std::vector<bool> isSelected(n, false);
+
+    // Start with the most distant pair
+    size_t first = 0;
+    size_t second = 0;
+    double maxDist = -std::numeric_limits<double>::infinity();
+
+    for (size_t i = 0; i < n; ++i)
+        {
+        for (size_t j = i + 1; j < n; ++j)
+            {
+            if (dist[i][j] > maxDist)
+                {
+                maxDist = dist[i][j];
+                first = i;
+                second = j;
+                }
+            }
+        }
+
+    selected.push_back(first);
+    isSelected[first] = true;
+
+    if (k == 1)
+        return selected;
+
+    selected.push_back(second);
+    isSelected[second] = true;
+
+    // minDistToSelected[i] = distance from taxon i to nearest selected taxon
+    std::vector<double> minDistToSelected(n, std::numeric_limits<double>::infinity());
+
+    for (size_t i = 0; i < n; ++i)
+        {
+        if (!isSelected[i])
+            minDistToSelected[i] = std::min(dist[i][first], dist[i][second]);
+        }
+
+    while (selected.size() < k)
+        {
+        size_t best = 0;
+        double bestMinDist = -std::numeric_limits<double>::infinity();
+
+        for (size_t i = 0; i < n; ++i)
+            {
+            if (!isSelected[i] && minDistToSelected[i] > bestMinDist)
+                {
+                bestMinDist = minDistToSelected[i];
+                best = i;
+                }
+            }
+
+        selected.push_back(best);
+        isSelected[best] = true;
+
+        // Update nearest-selected distances
+        for (size_t i = 0; i < n; ++i)
+            {
+            if (!isSelected[i])
+                {
+                minDistToSelected[i] = std::min(minDistToSelected[i], dist[i][best]);
+                }
+            }
+        }
+
+    return selected;
+}
+
 /*-------------------------------------------------------------------
 |
 |   GetPossibleNucs: 
@@ -641,6 +793,18 @@ int Alignment::getTaxonIndex(std::string ns) {
 		i++;
 		}
 	return taxonIndex;
+}
+
+std::string Alignment::getTaxonNamesString(void) {
+
+    std::string tNames = "";
+    for (size_t i=0; i<taxonNames.size(); i++)
+        {
+        if (i != 0)
+            tNames += ", ";
+        tNames += taxonNames[i];
+        }
+    return tNames;
 }
 
 int Alignment::lengthOfLongestTaxonName(void) {
@@ -829,6 +993,7 @@ void Alignment::summarize(void) {
 
     std::cout << "   Data summary:" << std::endl;
     std::cout << "   * Number of taxa    = " << std::setw(maxNumDigits) << numTaxa << std::endl;
+    std::cout << "   * Taxa              = " << getTaxonNamesString() << std::endl;
     std::cout << "   * Number of sites   = " << std::setw(maxNumDigits) << numSites << std::endl;
 
     for (int i=1; i<16; i++)

@@ -711,6 +711,38 @@ std::string Tree::getNewickString(void) {
     return strm.str();
 }
 
+std::unordered_set<uint16_t> Tree::getPartitions(void) {
+
+    // set up a partition for every node in the tree
+    std::vector<uint16_t> tempParts(nodes.size(), 0);
+
+    // initialize the bit set for the tip nodes
+    for (size_t i=0; i<numTips; i++)
+        {
+        uint16_t x = 0;
+        x |= (1u << i);
+        tempParts[i] = x;
+        }
+        
+    std::unordered_set<uint16_t> parts;
+    for (Node* p : downPassSequence)
+        {
+        if (p->getIsTip() == true)
+            continue;
+        if (p->getAncestor() == root)
+            continue;
+            
+        uint16_t x = 0;
+        for (Node* d=p->getFirstDescendant(); d != nullptr; d=d->getNextSibling())
+            x |= tempParts[d->getIndex()];
+        tempParts[p->getIndex()] = x;
+        
+        parts.insert(x);
+        }
+            
+    return parts;
+}
+
 bool Tree::hasNode(Node* p) {
 
     for (int i=0; i<nodes.size(); i++)

@@ -1,5 +1,19 @@
 #NEXUS
 
+[
+@article{DErchia1996,
+  author  = {D'Erchia, Anna Maria and Gissi, Carmela and Pesole, Graziano
+             and Saccone, Cecilia and Arnason, Ulfur},
+  title   = {The Guinea-Pig Is Not a Rodent},
+  journal = {Nature},
+  year    = {1996},
+  volume  = {381},
+  number  = {6583},
+  pages   = {597--600},
+  doi     = {10.1038/381597a0}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=9741;
    format datatype=dna;

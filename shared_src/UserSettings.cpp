@@ -75,6 +75,8 @@ void UserSettings::readSettings(int argc, char* argv[]) {
                 sampleFrequency = stod(cmd);
             else if (key == "-w")
                 numTwists = stod(cmd);
+            else if (key == "-e")
+                excludedTaxa.push_back(cmd);
             else
                 Msg::error("Improperly formatted commands");
             readingKey = true;

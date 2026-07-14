@@ -11,14 +11,64 @@
 #include <utility>
 #include "Msg.hpp"
 #include "Peak.hpp"
+#include "TreeKey.hpp"
 #include "TreeSamples.hpp"
 #include "TreeSpace.hpp"
+
+typedef struct {
+
+    unsigned    n;
+    double      mean;
+    double      M2;
+} RunningStats;
+
+void initRunningStats(RunningStats *s) {
+
+    s->n = 0;
+    s->mean = 0.0;
+    s->M2 = 0.0;
+}
+
+void addObservation(RunningStats *s, double x) {
+
+    s->n++;
+
+    double delta = x - s->mean;
+    s->mean += delta / s->n;
+    double delta2 = x - s->mean;
+    s->M2 += delta * delta2;
+}
+
+double mean(const RunningStats *s) {
+
+    return s->mean;
+}
+
+double populationVariance(const RunningStats *s) {
+
+    return (s->n > 0) ? s->M2 / s->n : 0.0;
+}
+
+double sampleVariance(const RunningStats *s) {
+
+    return (s->n > 1) ? s->M2 / (s->n - 1) : 0.0;
+}
+
+double populationStdDev(const RunningStats *s) {
+
+    return sqrt(populationVariance(s));
+}
+
+double sampleStdDev(const RunningStats *s) {
+
+    return sqrt(sampleVariance(s));
+}
+
 
 
 
 TreeSpace::TreeSpace(TreeCache* tc, std::string st) : treeCache(tc), swapType(st) {
         
-    // construct graph
     // construct graph
     TreeCacheMap& tCache = treeCache->getCache();
 
@@ -38,7 +88,8 @@ TreeSpace::TreeSpace(TreeCache* tc, std::string st) : treeCache(tc), swapType(st
     std::cout << "]" << std::endl;
     std::cout << "   * [";
 
-    averageDegree = 0.0;
+    RunningStats degreeStats;
+    initRunningStats(&degreeStats);
     for (auto& [key,val] : tCache)
         {
         TreeSpaceNode* thisTree = getTree(key);
@@ -51,6 +102,7 @@ TreeSpace::TreeSpace(TreeCache* tc, std::string st) : treeCache(tc), swapType(st
             }
             
         averageDegree += thisTree->neighbors.size();
+        addObservation(&degreeStats, thisTree->neighbors.size());
 
         treeCnt++;
 
@@ -61,7 +113,8 @@ TreeSpace::TreeSpace(TreeCache* tc, std::string st) : treeCache(tc), swapType(st
             std::cout << "*" << std::flush;
         numAsterices = filledWidth;
         }
-    averageDegree /= tCache.size();
+    averageDegree = mean(&degreeStats);
+    varianceDegree = sampleVariance(&degreeStats);
 
     std::cout << "]" << std::endl << std::endl;        
        
@@ -155,12 +208,14 @@ void TreeSpace::characterize(void) {
             }
         }
         
-    // check that the peaks contain all of the trees in the graph
+    // check that the peaks contain all of the trees in the graph and that the basin probabilities sum to one
     int n = 0;
+    double sum = 0.0;
     for (auto& [key,val] : peaks)
         {
         TreeSet& treesInSet = val->getTrees();
         n += treesInSet.size();
+        sum += val->getPeakProbability();
         }
     if (n != treeNodes.size())
         {
@@ -168,14 +223,17 @@ void TreeSpace::characterize(void) {
         std::cout << "Sum member trees = " << n << std::endl;
         Msg::error("Mismatch between peak member tree size and number of tree space vertices");
         }
+    if (fabs(1.0 - sum) > 0.01)
+        {
+        std::cout << "Sum of basin probabilities = " << sum << std::endl;
+        Msg::error("Problem with basin probabilities");
+        }
 
     // label the peaks in order from highest to lowest
     std::vector<std::pair<uint64_t, Peak*>> vec(peaks.begin(), peaks.end());
-    std::sort(vec.begin(), vec.end(),
-              [](const auto& a, const auto& b) {
-                  return a.second->getPeakTreeProbability() > b.second->getPeakTreeProbability();
-                  // or: a.second->getProbability() > b.second->getProbability();
-              });
+    std::sort(vec.begin(), vec.end(), [](const auto& a, const auto& b) {
+        return a.second->getPeakTreeProbability() > b.second->getPeakTreeProbability(); // or: a.second->getProbability() > b.second->getProbability();
+        });
     int peakId = 0;
     double bMax = 0.0, peakMassEntropy = 0.0, firstProb = 0.0, secondProb = 0.0;
     for (const auto& [key, peak] : vec) 
@@ -198,19 +256,61 @@ void TreeSpace::characterize(void) {
     double dominanceRatio = 0.0;
     if (peaks.size() > 1)
         dominanceRatio = firstProb / secondProb;
+        
+    // number of graph edges connecting each pair of basins (basin adjacency)
+    int nPeaks = (int)peaks.size();
+    std::vector<int> peakPaths(nPeaks * nPeaks, 0);
 
+    std::unordered_map<uint64_t,uint64_t> assignment = computePeakAssignments();
+    std::unordered_map<uint64_t,int> peakHashToId;
+    for (const auto& [key, peak] : peaks)
+        peakHashToId[key] = peak->getPeakId();
+
+    for (const auto& [hash, node] : treeNodes)
+        {
+        auto ia = assignment.find(hash);
+        if (ia == assignment.end())
+            continue;
+        int idA = peakHashToId[ia->second];
+        for (TreeSpaceNode* nb : node->neighbors)
+            {
+            if (hash > nb->treeHash)
+                continue;                       // count each undirected edge once
+            auto ib = assignment.find(nb->treeHash);
+            if (ib == assignment.end())
+                continue;
+            int idB = peakHashToId[ib->second];
+            if (idA == idB)
+                continue;                       // same basin, not a crossing edge
+            peakPaths[idA * nPeaks + idB]++;
+            peakPaths[idB * nPeaks + idA]++;
+            }
+        }
+        
     // print peak information
+    TreeKey& tKey = TreeKey::treeKey();
     std::cout << "   Peaks (" << swapType << "):" << std::endl;
+    sum = 0.0;
     for (const auto& [key, peak] : vec) 
         {
-        std::cout << "   * " << peak->getPeakId() << ": " << std::left << std::setw(20) << key << " " 
-                  << " " << std::setw(8) << peak->getNumTrees() << " " << " " << peak->getPeakProbability() << "\n";
+        sum += peak->getPeakProbability();
+        std::cout << "   * " << peak->getPeakId() << ": " << std::left << std::setw(8) << tKey.numberForTreeHash(key) << " " 
+                  << " " << std::setw(8) << peak->getNumTrees() << " " << " " << peak->getPeakProbability() << " " << sum << "\n";
         }
     std::cout << std::endl;
+
+//    std::cout << "   Number of paths between peaks" << std::endl;
+//    for (int i=0; i<nPeaks; i++)
+//        {
+//        for (int j=i+1; j<nPeaks; j++)
+//            std::cout << "   * " << i << "-" << j << ": " << peakPaths[i * nPeaks + j] << std::endl;
+//        }
+//    std::cout << std::endl;
     
     std::cout << "   Tree space characteristics (" << swapType << "):" << std::endl;
     std::cout << "   * Number of vertices       = " << treeNodes.size() << std::endl;
     std::cout << "   * Average degree           = " << averageDegree << std::endl;
+    std::cout << "   * Variance degree          = " << varianceDegree << std::endl;
     std::cout << "   * Largest basin fraction   = " << bMax << std::endl;
     std::cout << "   * Peak mass entropy        = " << peakMassEntropy << std::endl;
     std::cout << "   * Expected number of peaks = " << std::exp(peakMassEntropy) << std::endl;
@@ -219,6 +319,56 @@ void TreeSpace::characterize(void) {
     else 
         std::cout << "   * Dominance ratio          = Undefined" << std::endl;
     std::cout << std::endl;
+    
+#   if 0
+    // print tree space information for python graph
+    std::cout << "vertex_data = [";
+    bool isFirst = true;
+    for (const auto& [key, peak] : vec) 
+        {
+        int basinSize = peak->getNumTrees();
+        if (isFirst == false)
+            std::cout << ",";
+        isFirst = false;
+        std::cout << "(" << basinSize << "," << peak->getPeakProbability() << ")";
+        }
+    std::cout << "]" << std::endl;
+    
+    std::cout << "edges = [";
+    isFirst = true;
+    for (int i=0; i<nPeaks; i++)
+        {
+        for (int j=i+1; j<nPeaks; j++)
+            {            
+            if (peakPaths[i * nPeaks + j] > 0)
+                {
+                if (isFirst == false)
+                    std::cout << ",";
+                isFirst = false;
+                std::cout << "(" << i << "," << j << ")";
+                }
+            }
+        }
+    std::cout << "]" << std::endl;
+    
+    std::cout << "edge_widths = [";
+    isFirst = true;
+    for (int i=0; i<nPeaks; i++)
+        {
+        for (int j=i+1; j<nPeaks; j++)
+            {            
+            if (peakPaths[i * nPeaks + j] > 0)
+                {
+                if (isFirst == false)
+                    std::cout << ",";
+                isFirst = false;
+                //std::cout << "peakPaths[i * nPeaks + j]";
+                std::cout << "1";
+                }
+            }
+        }
+    std::cout << "]" << std::endl;
+#   endif
 }
 
 void TreeSpace::characterizeBasins(std::unordered_map<uint64_t,int>& basins) {
@@ -233,214 +383,6 @@ void TreeSpace::characterizeBasins(std::unordered_map<uint64_t,int>& basins) {
             it->second++;
         }
 }
-
-TreeSpaceNode* TreeSpace::findBestNeighbor(TreeSpaceNode* nde) {
-
-    double bestLnL = (*nde->neighbors.begin())->lnL;
-    TreeSpaceNode* bestNeighbor = (*nde->neighbors.begin());
-    for (TreeSpaceNode* n : nde->neighbors)
-        {
-        if (n->lnL > bestLnL)
-            {
-            bestLnL = n->lnL;
-            bestNeighbor = n;
-            }
-        }
-    return bestNeighbor;
-}
-
-Peak* TreeSpace::findPeak(uint64_t treeHash) {
-
-    PeakMap::iterator it = peaks.find(treeHash);
-    if (it != peaks.end())
-        return it->second;
-    return nullptr;
-}
-
-Peak* TreeSpace::findPeakForTreeWithHash(uint64_t treeHash) {
-
-    for (auto& [key,val] : peaks)
-        {
-        if (val->isTreeInPeak(treeHash) == true)
-            return val;
-        }
-    return nullptr;
-}
-
-Peak* TreeSpace::findPeakWithId(int id) {
-
-    for (auto& [key,val] : peaks)
-        {
-        if (val->getPeakId() == id)
-            return val;
-        }
-    return nullptr;
-}
-
-TreeSpaceNode* TreeSpace::getTree(uint64_t treeHash) {
-
-    TreeNodesMap::iterator it = treeNodes.find(treeHash);
-    if (it == treeNodes.end())
-        {
-        TreeSpaceNode* newNode = new TreeSpaceNode;
-        TreeInfo* info = treeCache->getTreeInfo(treeHash);
-        if (info == nullptr)
-            Msg::error("Could not find tree when constructing tree space");
-        newNode->treeHash = treeHash;
-        newNode->lnL = info->lnLikelihood;
-        treeNodes.insert( std::make_pair(treeHash,newNode) );
-        return newNode;
-        }
-    return it->second;
-}
-
-double TreeSpace::getTreeProbabiity(uint64_t treeHash) {
-
-    TreeProbMap::iterator it = treeProbabilities.find(treeHash);
-    if (it == treeProbabilities.end())
-        Msg::error("Could not find tree probability");
-    return it->second;
-}
-
-int TreeSpace::graphDistance(const TreeSpaceNode* a, const TreeSpaceNode* b) {
-
-    if (a == nullptr || b == nullptr)
-        return -1;
-
-    if (a == b)
-        return 0;
-
-    std::queue<std::pair<const TreeSpaceNode*, int>> q;
-    std::unordered_set<const TreeSpaceNode*> visited;
-    visited.reserve(1024); // optional
-
-    visited.insert(a);
-    q.push({a, 0});
-
-    while (!q.empty())
-    {
-        const auto [cur, dist] = q.front();
-        q.pop();
-
-        // Explore neighbors (each step is +1 edge)
-        for (const TreeSpaceNode* nb : cur->neighbors)
-        {
-            if (nb == nullptr)
-                continue;
-
-            if (visited.find(nb) != visited.end())
-                continue;
-
-            if (nb == b)
-                return dist + 1;
-
-            visited.insert(nb);
-            q.push({nb, dist + 1});
-        }
-    }
-
-    return -1; // unreachable
-}
-
-void TreeSpace::printPosterior(void) {
-
-    // copy into a vector of pairs
-    std::vector<std::pair<uint64_t,double>> vec(treeProbabilities.begin(), treeProbabilities.end());
-
-    // sort by value (descending)
-    std::sort(vec.begin(), vec.end(),
-              [](const auto& a, const auto& b) {
-                  return a.second > b.second;
-              });
-
-    // print keys and values 
-    std::cout << "   Exact posterior probability distribution: " << std::endl;
-    double sum = 0.0;
-    for (const auto& [key, value] : vec) 
-        {
-        Peak* pk = findPeakForTreeWithHash(key);
-        int peakId = pk->getPeakId();
-        sum += value;
-        std::cout << "      " << std::left << std::setw(20) << key << " " << std::setw(4) << peakId << " -- " << value << " " << sum << "\n";
-        if (sum > 0.999)
-            break;
-        }
-    std::cout << std::endl;
-}
-
-void TreeSpace::printPosterior(std::string fileName) {
-
-    std::ofstream strm(fileName);
-    
-    // copy into a vector of pairs
-    std::vector<std::pair<uint64_t,double>> vec(treeProbabilities.begin(), treeProbabilities.end());
-
-    // sort by value (descending)
-    std::sort(vec.begin(), vec.end(),
-              [](const auto& a, const auto& b) {
-                  return a.second > b.second;
-              });
-
-    // print keys and values
-    double sum = 0.0;
-    for (const auto& [key, value] : vec) 
-        {
-        sum += value;
-        strm << "      " << std::setw(20) << key << " -- " << value << " " << sum << "\n";
-        if (sum > 0.999)
-            break;
-        }
-    
-    strm.close();
-}
-
-void TreeSpace::printPosterior(TreeSamples* samples) {
-
-    // copy into a vector of pairs
-    std::vector<std::pair<uint64_t,double>> vec(treeProbabilities.begin(), treeProbabilities.end());
-
-    // sort by value (descending)
-    std::sort(vec.begin(), vec.end(),
-              [](const auto& a, const auto& b) {
-                  return a.second > b.second;  // highest to lowest
-              });
-
-    // print keys (and values if you want)
-    std::cout << "   True posterior probability distribution: " << std::endl;
-    double sumTrue = 0.0, sumMcmc = 0.0;
-    for (const auto& [key, value] : vec) 
-        {
-        Peak* peak = findPeakForTreeWithHash(key);
-        int peakId = peak->getPeakId();
-        double mcmcApprox = samples->getTreeProbability(key);
-        sumTrue += value;
-        sumMcmc += mcmcApprox;
-        std::cout << std::fixed << std::setprecision(6);
-        std::cout << "      " << std::setw(20) << key << std::setw(3) << " " << peakId << " -- " << value << " <-> " << mcmcApprox << " " << sumTrue << "\n";
-        if (sumTrue > 0.999 && sumMcmc > 0.999)
-            break;
-        }
-}
-
-uint64_t TreeSpace::steepestAscent(uint64_t startTree) {
-
-    TreeSpaceNode* currentTree = getTree(startTree);
-    bool stopWalk = false;
-    do {
-        TreeSpaceNode* bestNeighbor = findBestNeighbor(currentTree);
-        if (bestNeighbor == nullptr)
-            Msg::error("bestNeighbor is NULL");
-        if (bestNeighbor->lnL > currentTree->lnL)
-            currentTree = bestNeighbor;
-        else 
-            stopWalk = true;
-
-        } while(stopWalk == false);
-
-    return currentTree->treeHash;
-}
-
-
 
 void TreeSpace::clearPeaks(void) {
 
@@ -465,7 +407,7 @@ std::unordered_map<uint64_t,uint64_t> TreeSpace::computePeakAssignments(void) {
     return assignments;
 }
 
-TreeSpace::LocalSummary TreeSpace::computeLocalSummary(void) {
+LocalSummary TreeSpace::computeLocalSummary(void) {
 
     LocalSummary stats;
     stats.numTrees = treeNodes.size();
@@ -473,7 +415,6 @@ TreeSpace::LocalSummary TreeSpace::computeLocalSummary(void) {
     if (stats.numTrees == 0)
         return stats;
 
-    double sumDegree = 0.0;
     double sumUphillFraction = 0.0;
     double sumWeightedUphillFraction = 0.0;
     double sumBestDiff = 0.0;
@@ -481,12 +422,13 @@ TreeSpace::LocalSummary TreeSpace::computeLocalSummary(void) {
     double sumMeanAbsDiff = 0.0;
     double sumWeightedMeanAbsDiff = 0.0;
     size_t degreeTotal = 0;
+    RunningStats degreeStats;
+    initRunningStats(&degreeStats);
 
     for (auto& [hash, node] : treeNodes)
         {
         size_t degree = node->neighbors.size();
-        degreeTotal += degree;
-        sumDegree += (double)degree;
+        addObservation(&degreeStats, degree);
 
         double p = getTreeProbabiity(hash);
         size_t uphill = 0;
@@ -528,7 +470,8 @@ TreeSpace::LocalSummary TreeSpace::computeLocalSummary(void) {
         }
 
     stats.numEdges = degreeTotal / 2;
-    stats.meanDegree = sumDegree / (double)stats.numTrees;
+    stats.meanDegree = mean(&degreeStats);
+    stats.varDegree = sampleVariance(&degreeStats);
     stats.meanUphillFraction = sumUphillFraction / (double)stats.numTrees;
     stats.posteriorWeightedMeanUphillFraction = sumWeightedUphillFraction;
     stats.meanBestNeighborLnLDifference = sumBestDiff / (double)stats.numTrees;
@@ -539,7 +482,7 @@ TreeSpace::LocalSummary TreeSpace::computeLocalSummary(void) {
     return stats;
 }
 
-TreeSpace::BasinSummary TreeSpace::computeBasinSummary(void) {
+BasinSummary TreeSpace::computeBasinSummary(void) {
 
     if (peaks.empty() == true)
         characterize();
@@ -589,38 +532,15 @@ TreeSpace::BasinSummary TreeSpace::computeBasinSummary(void) {
     return stats;
 }
 
-int TreeSpace::steepestAscentLength(uint64_t startTree) {
-
-    TreeSpaceNode* currentTree = getTree(startTree);
-    int length = 0;
-    bool stopWalk = false;
-    do {
-        TreeSpaceNode* bestNeighbor = findBestNeighbor(currentTree);
-        if (bestNeighbor == nullptr)
-            Msg::error("bestNeighbor is NULL");
-        if (bestNeighbor->lnL > currentTree->lnL)
-            {
-            currentTree = bestNeighbor;
-            length++;
-            }
-        else
-            stopWalk = true;
-
-        } while(stopWalk == false);
-
-    return length;
-}
-
 std::vector<uint64_t> TreeSpace::credibleSet(double probability) {
 
     std::vector<std::pair<uint64_t,double>> sorted(treeProbabilities.begin(), treeProbabilities.end());
-    std::sort(sorted.begin(), sorted.end(),
-              [](const auto& a, const auto& b)
-                  {
-                  if (a.second != b.second)
-                      return a.second > b.second;
-                  return a.first < b.first;
-                  });
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b)
+      {
+      if (a.second != b.second)
+          return a.second > b.second;
+      return a.first < b.first;
+      });
 
     std::vector<uint64_t> result;
     double cumulative = 0.0;
@@ -634,7 +554,7 @@ std::vector<uint64_t> TreeSpace::credibleSet(double probability) {
     return result;
 }
 
-TreeSpace::AscentSummary TreeSpace::computeAscentSummary(void) {
+AscentSummary TreeSpace::computeAscentSummary(void) {
 
     AscentSummary stats;
     if (treeNodes.empty() == true)
@@ -679,7 +599,7 @@ TreeSpace::AscentSummary TreeSpace::computeAscentSummary(void) {
     return stats;
 }
 
-TreeSpace::CredibleComponentSummary TreeSpace::computeCredible95ComponentSummary(void) {
+CredibleComponentSummary TreeSpace::computeCredible95ComponentSummary(void) {
 
     CredibleComponentSummary stats;
 
@@ -746,7 +666,7 @@ TreeSpace::CredibleComponentSummary TreeSpace::computeCredible95ComponentSummary
     return stats;
 }
 
-TreeSpace::BarrierSummary TreeSpace::computeBarrierSummary(std::vector<SaddleInfo>& saddles) {
+BarrierSummary TreeSpace::computeBarrierSummary(std::vector<SaddleInfo>& saddles) {
 
     if (peaks.empty() == true)
         characterize();
@@ -893,6 +813,249 @@ TreeSpace::BarrierSummary TreeSpace::computeBarrierSummary(std::vector<SaddleInf
     return stats;
 }
 
+
+TreeSpaceNode* TreeSpace::findBestNeighbor(TreeSpaceNode* nde) {
+
+    double bestLnL = (*nde->neighbors.begin())->lnL;
+    TreeSpaceNode* bestNeighbor = (*nde->neighbors.begin());
+    for (TreeSpaceNode* n : nde->neighbors)
+        {
+        if (n->lnL > bestLnL)
+            {
+            bestLnL = n->lnL;
+            bestNeighbor = n;
+            }
+        }
+    return bestNeighbor;
+}
+
+Peak* TreeSpace::findPeak(uint64_t treeHash) {
+
+    PeakMap::iterator it = peaks.find(treeHash);
+    if (it != peaks.end())
+        return it->second;
+    return nullptr;
+}
+
+Peak* TreeSpace::findPeakForTreeWithHash(uint64_t treeHash) {
+
+    for (auto& [key,val] : peaks)
+        {
+        if (val->isTreeInPeak(treeHash) == true)
+            return val;
+        }
+    return nullptr;
+}
+
+Peak* TreeSpace::findPeakWithId(int id) {
+
+    for (auto& [key,val] : peaks)
+        {
+        if (val->getPeakId() == id)
+            return val;
+        }
+    return nullptr;
+}
+
+TreeSpaceNode* TreeSpace::getTree(uint64_t treeHash) {
+
+    TreeNodesMap::iterator it = treeNodes.find(treeHash);
+    if (it == treeNodes.end())
+        {
+        TreeSpaceNode* newNode = new TreeSpaceNode;
+        TreeInfo* info = treeCache->getTreeInfo(treeHash);
+        if (info == nullptr)
+            Msg::error("Could not find tree when constructing tree space");
+        newNode->treeHash = treeHash;
+        newNode->lnL = info->lnLikelihood;
+        treeNodes.insert( std::make_pair(treeHash,newNode) );
+        return newNode;
+        }
+    return it->second;
+}
+
+double TreeSpace::getTreeProbabiity(uint64_t treeHash) {
+
+    TreeProbMap::iterator it = treeProbabilities.find(treeHash);
+    if (it == treeProbabilities.end())
+        Msg::error("Could not find tree probability");
+    return it->second;
+}
+
+int TreeSpace::graphDistance(const TreeSpaceNode* a, const TreeSpaceNode* b) {
+
+    if (a == nullptr || b == nullptr)
+        return -1;
+
+    if (a == b)
+        return 0;
+
+    std::queue<std::pair<const TreeSpaceNode*, int>> q;
+    std::unordered_set<const TreeSpaceNode*> visited;
+    visited.reserve(1024); // optional
+
+    visited.insert(a);
+    q.push({a, 0});
+
+    while (!q.empty())
+        {
+        const auto [cur, dist] = q.front();
+        q.pop();
+
+        // Explore neighbors (each step is +1 edge)
+        for (const TreeSpaceNode* nb : cur->neighbors)
+            {
+            if (nb == nullptr)
+                continue;
+
+            if (visited.find(nb) != visited.end())
+                continue;
+
+            if (nb == b)
+                return dist + 1;
+
+            visited.insert(nb);
+            q.push({nb, dist + 1});
+            }
+        }
+
+    return -1; // unreachable
+}
+
+int TreeSpace::peakIdForTreeWithHash(uint64_t treeHash) {
+
+    TreeNodesMap::iterator it = treeNodes.find(treeHash);
+    if (it == treeNodes.end())
+        Msg::error("Could not find tree node");
+    return it->second->peakId;
+}
+
+void TreeSpace::printPosterior(void) {
+
+    // copy into a vector of pairs
+    std::vector<std::pair<uint64_t,double>> vec(treeProbabilities.begin(), treeProbabilities.end());
+
+    // sort by value (descending)
+    std::sort(vec.begin(), vec.end(), [](const auto& a, const auto& b) {
+        return a.second > b.second;
+        });
+
+    // print keys and values 
+    std::cout << "   Exact posterior probability distribution: " << std::endl;
+    TreeKey& tKey = TreeKey::treeKey();
+    double sum = 0.0;
+    for (const auto& [key, value] : vec) 
+        {
+        Peak* pk = findPeakForTreeWithHash(key);
+        int peakId = pk->getPeakId();
+        sum += value;
+        unsigned tNum = tKey.numberForTreeHash(key);
+        std::cout << "      " << std::left << std::setw(10) << tNum << " " << std::setw(4) << peakId << " -- " << value << " " << sum << "\n";
+        if (sum > 0.999)
+            break;
+        }
+    std::cout << std::endl;
+}
+
+void TreeSpace::printPosterior(std::string fileName) {
+
+    std::ofstream strm(fileName);
+    
+    // copy into a vector of pairs
+    std::vector<std::pair<uint64_t,double>> vec(treeProbabilities.begin(), treeProbabilities.end());
+
+    // sort by value (descending)
+    std::sort(vec.begin(), vec.end(), [](const auto& a, const auto& b) {
+        return a.second > b.second;
+        });
+
+    // print keys and values
+    double sum = 0.0;
+    TreeKey& tKey = TreeKey::treeKey();
+    for (const auto& [key, value] : vec) 
+        {
+        sum += value;
+        unsigned tNum = tKey.numberForTreeHash(key);
+        strm << "      " << std::setw(10) << tNum << " -- " << value << " " << sum << "\n";
+        if (sum > 0.999)
+            break;
+        }
+    
+    strm.close();
+}
+
+void TreeSpace::printPosterior(TreeSamples* samples) {
+
+    // copy into a vector of pairs
+    std::vector<std::pair<uint64_t,double>> vec(treeProbabilities.begin(), treeProbabilities.end());
+
+    // sort by value (descending)
+    std::sort(vec.begin(), vec.end(), [](const auto& a, const auto& b) {
+        return a.second > b.second;  // highest to lowest
+        });
+
+    // print keys (and values if you want)
+    std::cout << "   True posterior probability distribution: " << std::endl;
+    TreeKey& tKey = TreeKey::treeKey();
+    double sumTrue = 0.0, sumMcmc = 0.0;
+    for (const auto& [key, value] : vec) 
+        {
+        Peak* peak = findPeakForTreeWithHash(key);
+        int peakId = peak->getPeakId();
+        double mcmcApprox = samples->getTreeProbability(key);
+        sumTrue += value;
+        sumMcmc += mcmcApprox;
+        unsigned tNum = tKey.numberForTreeHash(key);
+        std::cout << std::fixed << std::setprecision(6);
+        std::cout << "      " << std::setw(10) << tNum << std::setw(3) << " " << peakId << " -- " << value << " <-> " << mcmcApprox << " " << sumTrue << "\n";
+        if (sumTrue > 0.999 && sumMcmc > 0.999)
+            break;
+        }
+}
+
+uint64_t TreeSpace::steepestAscent(uint64_t startTree) {
+
+    TreeSpaceNode* currentTree = getTree(startTree);
+    bool stopWalk = false;
+    do {
+        TreeSpaceNode* bestNeighbor = findBestNeighbor(currentTree);
+        if (bestNeighbor == nullptr)
+            Msg::error("bestNeighbor is NULL");
+        if (bestNeighbor->lnL > currentTree->lnL)
+            currentTree = bestNeighbor;
+        else 
+            stopWalk = true;
+
+        } while(stopWalk == false);
+
+    return currentTree->treeHash;
+}
+
+
+
+
+int TreeSpace::steepestAscentLength(uint64_t startTree) {
+
+    TreeSpaceNode* currentTree = getTree(startTree);
+    int length = 0;
+    bool stopWalk = false;
+    do {
+        TreeSpaceNode* bestNeighbor = findBestNeighbor(currentTree);
+        if (bestNeighbor == nullptr)
+            Msg::error("bestNeighbor is NULL");
+        if (bestNeighbor->lnL > currentTree->lnL)
+            {
+            currentTree = bestNeighbor;
+            length++;
+            }
+        else
+            stopWalk = true;
+
+        } while(stopWalk == false);
+
+    return length;
+}
+
 void TreeSpace::writeRuggednessStatistics(std::string fileName) {
 
     if (peaks.empty() == true)
@@ -962,11 +1125,10 @@ void TreeSpace::writeRuggednessStatistics(std::string fileName) {
     sortedPeaks.reserve(peaks.size());
     for (auto& [hash, peak] : peaks)
         sortedPeaks.push_back(peak);
-    std::sort(sortedPeaks.begin(), sortedPeaks.end(),
-              [](Peak* a, Peak* b)
-                  {
-                  return a->getPeakId() < b->getPeakId();
-                  });
+    std::sort(sortedPeaks.begin(), sortedPeaks.end(), [](Peak* a, Peak* b)
+      {
+      return a->getPeakId() < b->getPeakId();
+      });
     for (Peak* peak : sortedPeaks)
         {
         strm << peak->getPeakId() << '\t'

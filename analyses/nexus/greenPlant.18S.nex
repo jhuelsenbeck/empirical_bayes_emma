@@ -1,5 +1,21 @@
 #NEXUS
 
+[
+@article{Soltis1999,
+  author  = {Soltis, Pamela S. and Soltis, Douglas E. and Wolf, Paul G.
+             and Nickrent, Daniel L. and Chaw, Shu-Miaw
+             and Chapman, Russell L.},
+  title   = {The Phylogeny of Land Plants Inferred from 18{S} {rDNA}
+             Sequences: Pushing the Limits of {rDNA} Signal?},
+  journal = {Molecular Biology and Evolution},
+  year    = {1999},
+  volume  = {16},
+  number  = {12},
+  pages   = {1774--1784},
+  doi     = {10.1093/oxfordjournals.molbev.a026089}
+}
+]
+
 begin data;
    dimensions ntax=10 nchar=1850;
    format datatype=dna;
