@@ -140,6 +140,13 @@ class MarkovChainAnalyzer {
         explicit                        MarkovChainAnalyzer(ThreadPool* tp, TreeCache* cache, std::string nme, bool useSparse = true);
                                         MarkovChainAnalyzer(ThreadPool* tp, const SparseMatrix& P, const Vector& pi);
                                         MarkovChainAnalyzer(ThreadPool* tp, const DenseMatrix& P, const Vector& pi);
+                                        ~MarkovChainAnalyzer(void);
+
+                                        // y = S x, S = D^{1/2} P D^{-1/2} the symmetrized kernel. Uses Apple
+                                        // Accelerate's symmetric sparse multiply (fp64, AMX/SME) when available,
+                                        // built lazily behind a self-check, else a threaded CPU product. Public
+                                        // so the Spectra operator wrappers can call it.
+        void                            applyS(const double* x, double* y) const;
         double                          stationaryDiscrepancy(void) const;
         bool                            verifyStationary(double tol = 1e-8) const;
         bool                            checkDetailedBalance(double tol = 1e-8) const;
@@ -186,6 +193,7 @@ class MarkovChainAnalyzer {
         double                          meanHittingTimeToSet(const std::vector<Eigen::Index>& targets) const;
         double                          meanHittingTimeToPosteriorMass(double targetMass = 0.95) const;
         Vector                          meanReturnTimes(void) const;
+        Vector                          leaveProbabilities(void) const;
         double                          averageAcceptanceRate(void) const;
         double                          entropyRate(void) const;
         double                          kemenyConstant(void) const;
@@ -248,10 +256,7 @@ class MarkovChainAnalyzer {
         void                            sparseMatVec(const Vector& x, Vector& y) const;
         Vector                          posteriorSqrt(void) const;
         void                            buildFromCache(TreeCache* cache);
-        bool                            conjugateGradient(const std::function<void(const Vector&, Vector&)>& applyA,
-                                                          const Vector& diagonal, const Vector& b, Vector& x,
-                                                          double tolerance, int maxIterations,
-                                                          int& iterations, double& relativeResidual) const;
+        bool                            conjugateGradient(const std::function<void(const Vector&, Vector&)>& applyA, const Vector& diagonal, const Vector& b, Vector& x, double tolerance, int maxIterations, int& iterations, double& relativeResidual) const;
         void                            ensureRowSparse(void) const;
         double                          transitionProbability(Eigen::Index i, Eigen::Index j) const;
         std::vector<Eigen::Index>       posteriorMassSet(double targetMass) const;
@@ -286,6 +291,13 @@ class MarkovChainAnalyzer {
         size_t                          detailedBalanceStateLimit = 200000;
         int                             defaultSparseEigenvalues = 4;
         mutable bool                    warnedZeroPosterior = false;
+        void                            buildAcceleratedOperator(void) const;
+        mutable Vector                  piSqrtCached;
+        mutable bool                    piSqrtReady = false;
+        mutable bool                    supportWasRestricted = false;   // true once buildFromCache dropped underflowed states
+        mutable void*                   accelHandle = nullptr;    // SparseMatrix_Double* (Apple) or null
+        mutable int                     accelState = 0;           // 0 unbuilt, 1 usable, -1 unavailable/failed
+        mutable double                  spmvSelfCheckError = std::numeric_limits<double>::quiet_NaN();
         mutable bool                    spectralCacheValid = false;
         mutable int                     spectralCacheNev = 0;
         mutable SpectralInfo            spectralCache;

@@ -11,7 +11,6 @@
 #include <utility>
 #include "Msg.hpp"
 #include "Peak.hpp"
-#include "TreeKey.hpp"
 #include "TreeSamples.hpp"
 #include "TreeSpace.hpp"
 
@@ -288,13 +287,12 @@ void TreeSpace::characterize(void) {
         }
         
     // print peak information
-    TreeKey& tKey = TreeKey::treeKey();
     std::cout << "   Peaks (" << swapType << "):" << std::endl;
     sum = 0.0;
     for (const auto& [key, peak] : vec) 
         {
         sum += peak->getPeakProbability();
-        std::cout << "   * " << peak->getPeakId() << ": " << std::left << std::setw(8) << tKey.numberForTreeHash(key) << " " 
+        std::cout << "   * " << peak->getPeakId() << ": " << std::left << std::setw(20) << key << " " 
                   << " " << std::setw(8) << peak->getNumTrees() << " " << " " << peak->getPeakProbability() << " " << sum << "\n";
         }
     std::cout << std::endl;
@@ -405,6 +403,84 @@ std::unordered_map<uint64_t,uint64_t> TreeSpace::computePeakAssignments(void) {
             assignments[h] = peakHash;
         }
     return assignments;
+}
+
+const TreeLandscapeMap& TreeSpace::landscapeByHash(uint64_t mapHash, double credibleMass) {
+
+    if (landscapeReady == true && landscapeMapHash == mapHash && landscapeCredibleMass == credibleMass)
+        return landscapeRecords;
+
+    if (peaks.empty() == true)
+        characterize();
+
+    // The basin every tree flows to, as a hash-to-peak-hash map built in one pass over the basin
+    // membership sets. Looking each tree up with findPeakForTreeWithHash would scan every peak per
+    // tree, which is quadratic in the number of peaks over the whole state space.
+    std::unordered_map<uint64_t,uint64_t> assignment = computePeakAssignments();
+
+    // Membership of the 95% credible set.
+    std::unordered_set<uint64_t> credible;
+    for (uint64_t h : credibleSet(credibleMass))
+        credible.insert(h);
+
+    // Graph distance from the MAP tree, by an explicit breadth-first search over the move-neighbour
+    // graph. The recursive adjacentTreeDistances() is deliberately not used here: a two-million-node
+    // state space would exhaust the stack. Distances are written onto the nodes and read back below;
+    // vertices unreachable from the MAP tree keep a distance of -1.
+    for (auto& [h,node] : treeNodes)
+        node->distance = -1;
+    TreeNodesMap::iterator mit = treeNodes.find(mapHash);
+    if (mit != treeNodes.end())
+        {
+        std::queue<TreeSpaceNode*> toVisit;
+        mit->second->distance = 0;
+        toVisit.push(mit->second);
+        while (toVisit.empty() == false)
+            {
+            TreeSpaceNode* u = toVisit.front();
+            toVisit.pop();
+            for (TreeSpaceNode* v : u->neighbors)
+                {
+                if (v->distance == -1)
+                    {
+                    v->distance = u->distance + 1;
+                    toVisit.push(v);
+                    }
+                }
+            }
+        }
+
+    landscapeRecords.clear();
+    landscapeRecords.reserve(treeNodes.size());
+    for (auto& [h,node] : treeNodes)
+        {
+        TreeLandscapeRecord rec;
+        rec.logLikelihood        = node->lnL;
+        rec.posteriorProbability = getTreeProbabiity(h);
+        rec.graphDistanceToMap   = node->distance;
+        rec.inCredible95         = (credible.find(h) != credible.end());
+        rec.isLocalPeak          = (peaks.find(h) != peaks.end());
+
+        uint64_t peakHash = 0;
+        std::unordered_map<uint64_t,uint64_t>::iterator ait = assignment.find(h);
+        if (ait != assignment.end())
+            peakHash = ait->second;
+        Peak* peak = findPeak(peakHash);
+        if (peak != nullptr)
+            {
+            rec.basinPeakId        = peak->getPeakId();
+            rec.basinPeakHash      = peak->getPeakTreeHash();
+            rec.basinPosteriorMass = peak->getPeakProbability();
+            rec.basinSize          = peak->getNumTrees();
+            }
+
+        landscapeRecords.emplace(h, rec);
+        }
+
+    landscapeMapHash      = mapHash;
+    landscapeCredibleMass = credibleMass;
+    landscapeReady        = true;
+    return landscapeRecords;
 }
 
 LocalSummary TreeSpace::computeLocalSummary(void) {
@@ -814,6 +890,115 @@ BarrierSummary TreeSpace::computeBarrierSummary(std::vector<SaddleInfo>& saddles
 }
 
 
+void TreeSpace::writeBasinTableHeader(std::ostream& os) {
+
+    os << "moveType"
+       << "\tbasinPeakId"
+       << "\tbasinPeakHash"
+       << "\tbasinPosteriorMass"
+       << "\tbasinSize"
+       << "\tbasinPeakLnL"
+       << "\tpeakLnLDeficit"
+       << "\tconnectionLnLToMap"
+       << "\tbarrierFromMap"
+       << "\tisMapBasin"
+       << "\n";
+}
+
+void TreeSpace::writeBasinTable(std::ostream& os, uint64_t mapHash) {
+
+    if (peaks.empty() == true)
+        characterize();
+
+    // Saddles between adjacent basins: for each pair, the highest-likelihood pass that connects
+    // them. computeBarrierSummary already finds these, so it is reused here; we then flood the basin
+    // graph from the MAP basin to turn the pairwise saddles into a per-basin barrier to the MAP tree.
+    std::vector<SaddleInfo> saddles;
+    computeBarrierSummary(saddles);
+
+    // The MAP basin is the basin that contains the supplied MAP tree.
+    std::unordered_map<uint64_t,uint64_t> assignment = computePeakAssignments();
+    std::unordered_map<uint64_t,uint64_t>::iterator mapIt = assignment.find(mapHash);
+    if (mapIt == assignment.end())
+        Msg::error("MAP tree is not assigned to any basin while writing the basin table");
+    uint64_t mapPeakHash = mapIt->second;
+    double   mapPeakLnL  = treeCache->getTreeInfo(mapPeakHash)->lnLikelihood;
+
+    // Undirected saddle graph on peak hashes, each edge carrying its saddle log likelihood.
+    std::unordered_map<uint64_t,std::vector<std::pair<uint64_t,double>>> adj;
+    for (auto& [peakHash, peak] : peaks)
+        adj[peakHash];
+    for (const SaddleInfo& s : saddles)
+        {
+        adj[s.peakHash1].push_back(std::make_pair(s.peakHash2, s.saddleLnL));
+        adj[s.peakHash2].push_back(std::make_pair(s.peakHash1, s.saddleLnL));
+        }
+
+    // Widest-path (max-min) flood from the MAP basin. connection[b] is the highest log likelihood
+    // threshold at which basin b and the MAP basin lie in one connected component -- the level of the
+    // lowest pass on the easiest route between them. The barrier out of the MAP basin to b is the
+    // descent from the MAP peak to that level.
+    const double NEG_INF = -std::numeric_limits<double>::infinity();
+    const double POS_INF =  std::numeric_limits<double>::infinity();
+    std::unordered_map<uint64_t,double> connection;
+    for (auto& [peakHash, peak] : peaks)
+        connection[peakHash] = NEG_INF;
+    connection[mapPeakHash] = POS_INF;
+
+    std::priority_queue<std::pair<double,uint64_t>> pq; // max-heap by bottleneck level
+    pq.push(std::make_pair(POS_INF, mapPeakHash));
+    while (pq.empty() == false)
+        {
+        double   level = pq.top().first;
+        uint64_t u     = pq.top().second;
+        pq.pop();
+        if (level < connection[u])
+            continue; // stale entry
+        for (const auto& [v, saddleLnL] : adj[u])
+            {
+            double candidate = std::min(level, saddleLnL);
+            if (candidate > connection[v])
+                {
+                connection[v] = candidate;
+                pq.push(std::make_pair(candidate, v));
+                }
+            }
+        }
+
+    // One row per basin, ordered by peak id so the MAP basin comes first.
+    std::vector<Peak*> ordered;
+    ordered.reserve(peaks.size());
+    for (auto& [peakHash, peak] : peaks)
+        ordered.push_back(peak);
+    std::sort(ordered.begin(), ordered.end(),
+              [](Peak* a, Peak* b) { return a->getPeakId() < b->getPeakId(); });
+
+    os << std::setprecision(10);
+    for (Peak* peak : ordered)
+        {
+        uint64_t peakHash = peak->getPeakTreeHash();
+        double   peakLnL  = treeCache->getTreeInfo(peakHash)->lnLikelihood;
+        bool     isMap    = (peakHash == mapPeakHash);
+        double   level    = connection[peakHash];
+
+        double   levelOut = isMap ? mapPeakLnL : level;                 // avoid printing +inf
+        double   barrier  = isMap ? 0.0
+                          : (level == NEG_INF ? POS_INF : mapPeakLnL - level);
+
+        os << swapType
+           << "\t" << peak->getPeakId()
+           << "\t" << peakHash
+           << "\t" << peak->getPeakProbability()
+           << "\t" << peak->getNumTrees()
+           << "\t" << peakLnL
+           << "\t" << (mapPeakLnL - peakLnL)
+           << "\t" << levelOut
+           << "\t" << barrier
+           << "\t" << (isMap ? 1 : 0)
+           << "\n";
+        }
+}
+
 TreeSpaceNode* TreeSpace::findBestNeighbor(TreeSpaceNode* nde) {
 
     double bestLnL = (*nde->neighbors.begin())->lnL;
@@ -942,15 +1127,13 @@ void TreeSpace::printPosterior(void) {
 
     // print keys and values 
     std::cout << "   Exact posterior probability distribution: " << std::endl;
-    TreeKey& tKey = TreeKey::treeKey();
     double sum = 0.0;
     for (const auto& [key, value] : vec) 
         {
         Peak* pk = findPeakForTreeWithHash(key);
         int peakId = pk->getPeakId();
         sum += value;
-        unsigned tNum = tKey.numberForTreeHash(key);
-        std::cout << "      " << std::left << std::setw(10) << tNum << " " << std::setw(4) << peakId << " -- " << value << " " << sum << "\n";
+        std::cout << "      " << std::left << std::setw(20) << key << " " << std::setw(4) << peakId << " -- " << value << " " << sum << "\n";
         if (sum > 0.999)
             break;
         }
@@ -971,12 +1154,10 @@ void TreeSpace::printPosterior(std::string fileName) {
 
     // print keys and values
     double sum = 0.0;
-    TreeKey& tKey = TreeKey::treeKey();
     for (const auto& [key, value] : vec) 
         {
         sum += value;
-        unsigned tNum = tKey.numberForTreeHash(key);
-        strm << "      " << std::setw(10) << tNum << " -- " << value << " " << sum << "\n";
+        strm << "      " << std::setw(20) << key << " -- " << value << " " << sum << "\n";
         if (sum > 0.999)
             break;
         }
@@ -996,7 +1177,6 @@ void TreeSpace::printPosterior(TreeSamples* samples) {
 
     // print keys (and values if you want)
     std::cout << "   True posterior probability distribution: " << std::endl;
-    TreeKey& tKey = TreeKey::treeKey();
     double sumTrue = 0.0, sumMcmc = 0.0;
     for (const auto& [key, value] : vec) 
         {
@@ -1005,9 +1185,8 @@ void TreeSpace::printPosterior(TreeSamples* samples) {
         double mcmcApprox = samples->getTreeProbability(key);
         sumTrue += value;
         sumMcmc += mcmcApprox;
-        unsigned tNum = tKey.numberForTreeHash(key);
         std::cout << std::fixed << std::setprecision(6);
-        std::cout << "      " << std::setw(10) << tNum << std::setw(3) << " " << peakId << " -- " << value << " <-> " << mcmcApprox << " " << sumTrue << "\n";
+        std::cout << "      " << std::setw(20) << key << std::setw(3) << " " << peakId << " -- " << value << " <-> " << mcmcApprox << " " << sumTrue << "\n";
         if (sumTrue > 0.999 && sumMcmc > 0.999)
             break;
         }

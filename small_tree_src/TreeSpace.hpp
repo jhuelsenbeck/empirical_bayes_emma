@@ -2,6 +2,7 @@
 #define TreeSpace_hpp
 
 #include <cstdint>
+#include <iosfwd>
 #include <limits>
 #include <map>
 #include <set>
@@ -103,11 +104,24 @@ struct BarrierSummary {
     double              maxBarrier = 0.0;
 };
 
+struct TreeLandscapeRecord {
+    double              logLikelihood = 0.0;
+    double              posteriorProbability = 0.0;
+    int                 basinPeakId = -1;
+    uint64_t            basinPeakHash = 0;
+    double              basinPosteriorMass = 0.0;
+    int                 basinSize = 0;
+    bool                isLocalPeak = false;
+    int                 graphDistanceToMap = -1;
+    bool                inCredible95 = false;
+};
+
 class Peak;
 class TreeSamples;
 typedef std::unordered_map<uint64_t,TreeSpaceNode*> TreeNodesMap;
 typedef std::unordered_map<uint64_t,double> TreeProbMap;
 typedef std::unordered_map<uint64_t,Peak*> PeakMap;
+typedef std::unordered_map<uint64_t,TreeLandscapeRecord> TreeLandscapeMap;
 
 
 
@@ -123,6 +137,27 @@ class TreeSpace {
         Peak*                   findPeakWithId(int id);
         TreeSpaceNode*          getTree(uint64_t treeHash);
         double                  getTreeProbabiity(uint64_t treeHash);
+
+                                // A per-tree landscape record for every vertex, keyed by tree hash, so the
+                                // dynamical quantities computed from the kernel (mean first-passage time,
+                                // return time, leave probability) can be joined to the tree it describes.
+                                // Basin identity, basin mass, credible-set membership, and the graph
+                                // distance from the MAP tree are all properties of the posterior and the
+                                // move-neighbour graph, so they do not depend on the proposal power and are
+                                // built once and cached. The distance is a breadth-first distance from the
+                                // supplied MAP tree; the record is rebuilt only if the MAP tree or credible
+                                // mass changes.
+        const TreeLandscapeMap& landscapeByHash(uint64_t mapHash, double credibleMass = 0.95);
+
+                                // Per-basin barrier table. For every basin, the barrier that
+                                // separates it from the MAP basin: the descent from the MAP peak to
+                                // the level of the lowest pass on the easiest route back to the MAP,
+                                // found by a widest-path flood of the saddle graph. Written in log
+                                // likelihood units, which for a flat prior over topologies are the
+                                // log-probability barrier. Barriers are a property of the posterior
+                                // surface and the neighbour graph, so they do not depend on power.
+        static void             writeBasinTableHeader(std::ostream& os);
+        void                    writeBasinTable(std::ostream& os, uint64_t mapHash);
         int                     graphDistance(const TreeSpaceNode* a, const TreeSpaceNode* b);
         void                    printPosterior(void);
         void                    printPosterior(std::string fileName);
@@ -152,6 +187,10 @@ class TreeSpace {
         std::string             swapType;
         double                  averageDegree;
         double                  varianceDegree;
+        TreeLandscapeMap        landscapeRecords;
+        bool                    landscapeReady = false;
+        uint64_t                landscapeMapHash = 0;
+        double                  landscapeCredibleMass = 0.0;
 };
 
 #endif

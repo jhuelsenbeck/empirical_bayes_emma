@@ -5,13 +5,14 @@
 #include "Alignment.hpp"
 #include "BitSetFactory.hpp"
 #include "ExhaustiveSearch.hpp"
+#include "LandscapeMixingCollator.hpp"
+#include "LikelihoodCalculator.hpp"
 #include "MapTree.hpp"
 #include "MarkovChainAnalyzer.hpp"
 #include "Mcmc.hpp"
 #include "RandomVariable.hpp"
 #include "Threads.hpp"
 #include "TreeCache.hpp"
-#include "TreeKey.hpp"
 #include "TreeLikelihoods.hpp"
 #include "TreeNeighborGenerator.hpp"
 #include "TreeNeighbors.hpp"
@@ -27,7 +28,7 @@ int main(int argc, char* argv[]) {
 
     printHeader();
     
-    // instantiate random variable and thread objects
+    // instantiate random variable and thread pool objects
     RandomVariable rng;
     ThreadPool threads;
 
@@ -35,7 +36,7 @@ int main(int argc, char* argv[]) {
     UserSettings& settings = UserSettings::userSettings();
     settings.readSettings(argc, argv);
     settings.print();
-    bool analyticsOnly = true;
+    bool analyticsOnly = false;
     int numTaxa = 10;
     int nReps = 50;
     
@@ -43,21 +44,24 @@ int main(int argc, char* argv[]) {
     Alignment* originalAlignment = new Alignment(settings.getInputFileName());
     Alignment* data = originalAlignment;
     if (originalAlignment->getNumTaxa() > numTaxa)
-        data = new Alignment(*originalAlignment, originalAlignment->farthestPointSelection(numTaxa));
-        //data = new Alignment(*originalAlignment, numTaxa, &rng);
-    data->print(settings.getOutputFileName() + ".nex");
+        data = new Alignment(*originalAlignment, numTaxa, &rng);
     if (settings.getNumTwists() > 0)
         data->twist(&rng, settings.getNumTwists());
+    data->print(settings.getOutputFileName() + ".nex");
     data->summarize();
     data->compress();
     BitSetFactory::getFactory().initialize(data->getNumTaxa());
+
+    // integrate branch lengths out under an IID Exp() prior (Laplace) in addition to the ML fit
+    LikelihoodCalculator::setComputeMarginalLikelihood(true);  // set to false to skip the marginal and keep only the profile/ML likelihood
+    LikelihoodCalculator::setExponentialPriorRate(10.0);       // change the prior rate here if needed
+    LikelihoodCalculator::setMarginalHessianMethod(1);         // Hessian for the Laplace volume term: 0 = diagonal only, 1 = full via finite differences (default)
 
     // calculate likelihoods of all trees
     TreeCache treeCacheNni("NNI");
     TreeLikelihoods treeLikelihoods(&treeCacheNni);
     ExhaustiveSearch exhaustive(data, &treeCacheNni, &threads);
-    TreeKey& treeKeys = TreeKey::treeKey();
-    treeKeys.initialize(&treeCacheNni);
+    treeCacheNni.calculatePosteriorProbabilities();            // normalize likelihoods (profile and hierarchical)
     
     // instantiate tree cache objects for NNI2 and TBR
     TreeCache treeCacheNni2("NNI2");
@@ -100,8 +104,21 @@ int main(int argc, char* argv[]) {
             
     // analytics using the kernel of the Markov chain
     std::vector<TreeCache*> caches = { &treeCacheNni, &treeCacheNni2, &treeCacheTbr };
-    std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2 };
+    std::vector<TreeSpace*> spaces = { &treeSpaceNni, &treeSpaceNni2, &treeSpaceTbr };
+    std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3 };
     bool writeSmallStateFiles = (data->getNumTaxa() <= 8);
+
+    // Per-basin barrier table, written once. Barriers are power-independent, so this sits outside the
+    // power loop; the per-tree state report is joined to it on (moveType, basinPeakId) during analysis.
+    std::string basinTableFileName = settings.getOutputFileName() + ".basins.tsv";
+    std::ofstream basinsOut(basinTableFileName);
+    if (!basinsOut)
+        throw std::runtime_error("Could not open basin table file: " + basinTableFileName);
+    TreeSpace::writeBasinTableHeader(basinsOut);
+    for (TreeSpace* space : spaces)
+        space->writeBasinTable(basinsOut, mapTree.getMapTree());
+    basinsOut.close();
+    std::cout << "   Basin barrier table written to " << basinTableFileName << "\n";
     
     std::string diagnosticsFileName = settings.getOutputFileName() + ".markov.tsv";
     std::ofstream diagnosticsOut(diagnosticsFileName);
@@ -111,8 +128,13 @@ int main(int argc, char* argv[]) {
     std::ofstream effOut(efficiencyFileName);
     if (!effOut)
         throw std::runtime_error("Could not open Markov-chain efficiency file: " + efficiencyFileName);
+    std::string stateReportFileName = settings.getOutputFileName() + ".state.tsv";
+    std::ofstream stateOut(stateReportFileName);
+    if (!stateOut)
+        throw std::runtime_error("Could not open per-tree state-report file: " + stateReportFileName);
     MarkovChainAnalyzer::writeTsvHeader(diagnosticsOut);
     MarkovChainAnalyzer::writeEfficiencyTsvHeader(effOut);
+    LandscapeMixingCollator::writeStateReportHeader(stateOut);
 
     for (double power : powers)
         {
@@ -125,7 +147,14 @@ int main(int argc, char* argv[]) {
             c->cacheNeighborProposalProbabilities(power);
 
             MarkovChainAnalyzer analyzer(&threads, c, c->getName() + " (" + std::to_string(power) + ")", true); // true -> forces sparse
-            analyzer.writeMeanFirstPassageTimesToTree(mapTree.getMapTree(), settings.getOutputFileName() + c->getName() + ".mfpt.tsv");
+
+            // Per-tree join of the kernel's dynamics with the landscape, one row per topology, appended
+            // to a single file across every move and power. This replaces the former per-move mfpt file,
+            // whose name was not power-stamped and so held only the last power analyzed. The mean
+            // first-passage time is a full sparse solve, so this is the cost driver of the per-power loop.
+            LandscapeMixingCollator::writeStateReport(stateOut, c->getName(), power, analyzer, *spaces[i], mapTree.getMapTree());
+            stateOut.flush();
+
             analyzer.writeEfficiencyTsvRow(effOut, c->getName(), power, "MAPtree", analyzer.efficiencyFor(analyzer.indicatorForTree(mapTree.getMapTree())));
             for (const auto& [part, trees] : mapTree.getPartitions())
                 {
@@ -143,10 +172,7 @@ int main(int argc, char* argv[]) {
                 {
                 std::string prefix = settings.getOutputFileName() + "." + c->getName() + ".beta_" + powerLabel(power);
                 std::cout << "   Writing small-state exact files with prefix " << prefix << "\n";
-                analyzer.writeSmallStateAnalysisFiles(prefix,
-                                                       false,  // dense kernel TSV is enormous; coordinate kernel is always written
-                                                        true,  // full right eigenvectors
-                                                       false); // all-pairs hitting-time matrix is enormous; MAP and 95% set are written
+                analyzer.writeSmallStateAnalysisFiles(prefix, false, true, false);
                 }
             }
         }
@@ -155,7 +181,6 @@ int main(int argc, char* argv[]) {
     if (analyticsOnly == false)
         {
         // Markov chain Monte Carlo exploration of tree space    
-        std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5 };
         for (double power : powers)
             {
             std::string convergenceFileName = ".conv_NNI_" + std::to_string(power);
@@ -208,8 +233,7 @@ void generateNeighbors(TreeCache& treeCache, TreeNeighbors& treeNeighbors, std::
     size_t numTrees = cache.size();
     size_t treeCnt = 0;
 
-    std::cout << "   Generating " << label << " neighbors for all "
-              << numTrees << " trees:" << std::endl;
+    std::cout << "   Generating " << label << " neighbors for all " << numTrees << " trees:" << std::endl;
 
     std::cout << "   * [";
     for (int i=0; i<barWidth; i++)

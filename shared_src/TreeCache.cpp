@@ -1,9 +1,13 @@
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iostream>
 #include "CompactTree.hpp"
 #include "Msg.hpp"
 #include "Tree.hpp"
 #include "TreeCache.hpp"
+#include "UserSettings.hpp"
+
 
 
 TreeCache::TreeCache(std::string nm) : cacheName(nm) {
@@ -63,6 +67,84 @@ size_t TreeCache::cacheSize(void) {
     return total;
 }
 
+void TreeCache::calculatePosteriorProbabilities(void) {
+
+    // calculate the exact posterior probability
+    double bestLnL = std::numeric_limits<double>::lowest();
+    double worstLnL = 0.0;
+    for (auto& [key,val] : treeCache)
+        {
+        if (val->lnLikelihood > bestLnL)
+            bestLnL = val->lnLikelihood;
+        if (val->lnLikelihood < worstLnL)
+            worstLnL = val->lnLikelihood;
+        }
+        
+    std::cout << "   Calculating posterior probabilities" << std::endl;
+    std::cout << "   * Maximum Likelihood = " << bestLnL << std::endl;
+    std::cout << "   * Minimum Likelihood = " << worstLnL << std::endl;
+    std::cout << "   * Difference         = " << bestLnL - worstLnL << std::endl << std::endl;
+        
+    double sum = 0.0;
+    for (auto& [key,val] : treeCache)
+        {
+        double x = std::exp(val->lnLikelihood - bestLnL);
+        val->posteriorProbability = x;
+        sum += x;
+        }
+    double factor = 1.0 / sum;
+    for (auto& [key,val] : treeCache)
+        val->posteriorProbability *= factor;     
+        
+    if (treeCache.begin()->second->hasLnMarginalLikelihood == true)
+        {
+        size_t nBad = 0, nTot = 0;
+        double lo =  std::numeric_limits<double>::infinity();
+        double hi = -std::numeric_limits<double>::infinity();
+        for (auto& [key,val] : treeCache) 
+            {
+            ++nTot;
+            double m = val->lnMarginalLikelihood;
+            if (!std::isfinite(m)) { ++nBad; continue; }
+            lo = std::min(lo, m);
+            hi = std::max(hi, m);
+            }
+        if (nBad > 0)
+            std::cout << nBad << " / " << nTot << " non-finite; finite range [" << lo << ", " << hi << "]\n";
+
+        double bestLnL = std::numeric_limits<double>::lowest();
+        for (auto& [key,val] : treeCache)
+            {
+            if (val->lnMarginalLikelihood > bestLnL)
+                bestLnL = val->lnMarginalLikelihood;
+            }
+        double sum = 0.0;
+        for (auto& [key,val] : treeCache)
+            {
+            double x = std::exp(val->lnMarginalLikelihood - bestLnL);
+            val->lnMarginalLikelihood = x;
+            sum += x;
+            }
+        double factor = 1.0 / sum;
+        for (auto& [key,val] : treeCache)
+            val->lnMarginalLikelihood *= factor;  
+            
+        // print file comparing probabilities
+        std::string ppCompFileName = UserSettings::userSettings().getOutputFileName() + ".pp_comp.tsv";
+        std::ofstream compOut(ppCompFileName);
+        if (!compOut)
+            throw std::runtime_error("Could not open basin table file: " + ppCompFileName);
+        compOut << "hash,x,y" << '\n';
+        for (auto& [key,val] : treeCache)
+            {
+            compOut << key << ",";
+            compOut << val->posteriorProbability << ",";
+            compOut << val->lnMarginalLikelihood << '\n';
+            }
+        compOut.close();
+        }
+}
+
 void TreeCache::freeTreeCache(void) {
 
     for (auto& pair : treeCache) 
@@ -88,6 +170,8 @@ void TreeCache::injectTreesAndLikelihoods(TreeCache* tc) {
             info->hash = val->hash;
             info->lnLikelihood = val->lnLikelihood;
             info->hasLnLikelihood = val->hasLnLikelihood;
+            info->lnMarginalLikelihood = val->lnMarginalLikelihood;
+            info->hasLnMarginalLikelihood = val->hasLnMarginalLikelihood;
             info->posteriorProbability = val->posteriorProbability;
             CompactTree* newCompactTree = new CompactTree(*val->compactTree);
             info->compactTree = newCompactTree;
@@ -99,6 +183,8 @@ void TreeCache::injectTreesAndLikelihoods(TreeCache* tc) {
             {
             it->second->lnLikelihood = val->lnLikelihood;
             it->second->hasLnLikelihood = val->hasLnLikelihood;
+            it->second->lnMarginalLikelihood = val->lnMarginalLikelihood;
+            it->second->hasLnMarginalLikelihood = val->hasLnMarginalLikelihood;
             it->second->posteriorProbability = val->posteriorProbability;
             }
         }

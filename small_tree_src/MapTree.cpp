@@ -3,7 +3,6 @@
 #include "Msg.hpp"
 #include "Tree.hpp"
 #include "TreeCache.hpp"
-#include "TreeKey.hpp"
 
 
 
@@ -107,12 +106,10 @@ void MapTree::printPartition(uint16_t part) {
 }
 
 void MapTree::print(void) {
-
-    TreeKey& tKey = TreeKey::treeKey();
     
     std::cout << "   MAP Tree" << std::endl;
-    std::cout << "   * ID  = " << tKey.numberForTreeHash(mapHash) << std::endl;
-    std::cout << "   * Pr(T=" << tKey.numberForTreeHash(mapHash) << " | X) = " << treeCache->getTreeInfo(mapHash)->posteriorProbability << std::endl;
+    std::cout << "   * ID  = " << mapHash << std::endl;
+    std::cout << "   * Pr(T=" << mapHash << " | X) = " << treeCache->getTreeInfo(mapHash)->posteriorProbability << std::endl;
     for (auto& [part, trees] : mapPartitions)
         {
         std::cout << "   * " << partitionString(part) << " = " << partitionProbability(part) << " (" << trees.size() << ")" << std::endl;;

@@ -2,7 +2,6 @@
 #include <iostream>
 #include "Msg.hpp"
 #include "Tree.hpp"
-#include "TreeKey.hpp"
 #include "TreeNeighborGenerator.hpp"
 #include "TreeNeighbors.hpp"
 
@@ -37,15 +36,13 @@ std::vector<TreeInfo*>& TreeNeighbors::neighbors(Tree* t) {
 
 void TreeNeighbors::print(void) {
 
-    TreeKey& tKey = TreeKey::treeKey();
     int i = 0;
     TreeCacheMap& tCache = treeCache->getCache();
     for (auto& [key,val] : tCache)
         {
-        std::cout << std::setw(6) << ++i << " " << std::setw(20) << tKey.numberForTreeHash(key) << " -- ";
+        std::cout << std::setw(6) << ++i << " " << std::setw(20) << key << " -- ";
         for (size_t i=0; i<val->neighbors.size(); i++)
             std::cout << val->neighbors[i] << " ";
         std::cout << std::endl;
         }
-
 }

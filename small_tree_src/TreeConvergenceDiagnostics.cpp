@@ -65,8 +65,7 @@ void TreeConvergenceDiagnostics::writeStatsHeader(std::ostream& os, size_t numRe
         os << "\tmapFirstHitCycle_rep" << i+1;
 }
 
-void TreeConvergenceDiagnostics::writeStatsLine(std::ostream& os,
-                                                const std::vector<TreeSamples*>& sampleVec) const {
+void TreeConvergenceDiagnostics::writeStatsLine(std::ostream& os, const std::vector<TreeSamples*>& sampleVec) const {
 
     std::vector<ChainStats> stats;
     stats.reserve(sampleVec.size());

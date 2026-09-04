@@ -21,10 +21,12 @@ struct TreeInfo {
     std::vector<double>     neighborProposalProbabilities;
     
     double                  lnLikelihood = std::numeric_limits<double>::quiet_NaN();
+    double                  lnMarginalLikelihood = std::numeric_limits<double>::quiet_NaN();
     double                  posteriorProbability = 0.0;
 
     bool                    hasNeighbors = false;
     bool                    hasLnLikelihood = false;
+    bool                    hasLnMarginalLikelihood = false;
     bool                    hasNeighborProposalProbabilities = false;
     double                  neighborProposalPower = std::numeric_limits<double>::quiet_NaN();
 
@@ -52,7 +54,9 @@ class TreeCache {
     public:
                         TreeCache(void) = delete;
                         TreeCache(std::string nm);
+        void            cacheNeighborProposalProbabilities(double power);
         size_t          cacheSize(void);
+        void            calculatePosteriorProbabilities(void);
         void            freeTreeCache(void);
         TreeCacheMap&   getCache(void) { return treeCache; }
         TreeInfo*       getTreeInfo(uint64_t treeHash);
@@ -60,7 +64,6 @@ class TreeCache {
         std::string     getName(void) { return cacheName; }
         void            injectTreesAndLikelihoods(TreeCache* tc);
         const std::vector<double>& neighborProposalProbabilities(TreeInfo* info, double power);
-        void            cacheNeighborProposalProbabilities(double power);
         size_t          size(void) { return treeCache.size(); }
         void            sortNeighborsByLikelihood(void);
     
