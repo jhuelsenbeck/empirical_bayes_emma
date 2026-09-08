@@ -14,7 +14,7 @@ class Alignment {
 
     public:
                                                     Alignment(void) = delete;
-                                                    Alignment(Alignment& a) = delete;
+                                                    Alignment(const Alignment& a);
                                                     Alignment(std::string fileName);
                                                     Alignment(std::vector<std::string> tn, int nr, int nc);
                                                     Alignment(Alignment& a, int nt, RandomVariable* rng);

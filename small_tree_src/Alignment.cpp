@@ -15,6 +15,33 @@
 
 
 
+Alignment::Alignment(const Alignment& aln) {
+
+    this->numTaxa = aln.numTaxa;
+    this->numSites = aln.numSites;
+    this->taxonNames = aln.taxonNames;
+    this->isCompressed = aln.isCompressed;
+
+    if (numTaxa == 0 || numSites == 0)
+        return;
+        
+    matrix = new int*[numTaxa];
+    matrix[0] = new int[numTaxa * numSites];
+    for (int i = 1; i < numTaxa; i++)
+        matrix[i] = matrix[i-1] + numSites;
+    for (int i=0; i<numTaxa; i++)
+        for (int j=0; j<numSites; j++)  
+            this->matrix[i][j] = aln.matrix[i][j];
+    
+    this->patternCount = nullptr;
+    if (isCompressed == true)
+        {
+        this->patternCount = new int[numSites];
+        for (int i=0; i<numSites; i++)
+            this->patternCount[i] = aln.patternCount[i];
+        }
+}
+
 Alignment::Alignment(std::string fileName) : 
     matrix(nullptr), patternCount(nullptr), numTaxa(0), numSites(0), isCompressed(false)  {
 

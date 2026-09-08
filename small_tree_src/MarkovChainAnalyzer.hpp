@@ -226,6 +226,14 @@ class MarkovChainAnalyzer {
         double                          posteriorSweepConductance(void) const;
         double                          eigenvectorSweepConductance(size_t maxDenseStates = 11000) const;
         static void                     writeTsvHeader(std::ostream& os);
+
+                                        // Wall-clock budget (seconds) for a single sparse solve (eigensolve or CG).
+                                        // A collapsed, near-degenerate cell can otherwise iterate for hours making
+                                        // negligible progress; when the budget is spent the solve stops and the cell
+                                        // is reported "solver_timed_out" rather than stalling the whole run. Default
+                                        // 1800 s; set once (e.g. in main) to change it.
+        static void                     setSolveBudgetSeconds(double s) { s_solveBudgetSeconds = s; }
+        static double                   solveBudgetSeconds(void) { return s_solveBudgetSeconds; }
         void                            writeTsvRow(std::ostream& os, const std::string& moveType, double power, double epsilon = 1e-6) const;
         void                            printExtendedReport(std::ostream& os = std::cout) const;
         void                            printReport(std::ostream& os = std::cout) const;
@@ -251,6 +259,7 @@ class MarkovChainAnalyzer {
         void                            setDefaultSparseEigenvalues(int x) { defaultSparseEigenvalues = x; clearSpectralCache(); }
 
     private:
+        static double                   s_solveBudgetSeconds;
         void                            initCommon(void);
         void                            applySymmetrizedLaplacian(const Vector& piSqrt, const Vector& y, Vector& out) const;
         void                            sparseMatVec(const Vector& x, Vector& y) const;
@@ -295,8 +304,8 @@ class MarkovChainAnalyzer {
         mutable Vector                  piSqrtCached;
         mutable bool                    piSqrtReady = false;
         mutable bool                    supportWasRestricted = false;   // true once buildFromCache dropped underflowed states
-        mutable void*                   accelHandle = nullptr;    // SparseMatrix_Double* (Apple) or null
-        mutable int                     accelState = 0;           // 0 unbuilt, 1 usable, -1 unavailable/failed
+        //mutable void*                   accelHandle = nullptr;    // SparseMatrix_Double* (Apple) or null
+        //mutable int                     accelState = 0;           // 0 unbuilt, 1 usable, -1 unavailable/failed
         mutable double                  spmvSelfCheckError = std::numeric_limits<double>::quiet_NaN();
         mutable bool                    spectralCacheValid = false;
         mutable int                     spectralCacheNev = 0;

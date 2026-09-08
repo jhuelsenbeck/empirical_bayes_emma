@@ -18,6 +18,7 @@ class UserSettings {
         std::vector<std::string>    getExcludedTaxa(void) { return excludedTaxa; }
         std::string                 getInputFileName(void) { return inputFileName; }
         int                         getNumTwists(void) { return numTwists; }
+        std::string                 getOutputDirectoryName(void) { return outputDirectoryName; }
         std::string                 getOutputFileName(void) { return outputFileName; }
         int                         getPrintFrequency(void) { return printFrequency; }
         int                         getSampleFrequency(void) { return sampleFrequency; }
@@ -37,6 +38,8 @@ class UserSettings {
         int                         numTwists;
         std::string                 inputFileName;
         std::string                 outputFileName;
+        std::string                 outputDirectoryName;
+        std::string                 outputFileNameStub;
         bool                        settingsInitialized;
         std::string                 executableName;
         std::vector<std::string>    excludedTaxa;

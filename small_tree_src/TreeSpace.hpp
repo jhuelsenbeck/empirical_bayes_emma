@@ -132,6 +132,11 @@ class TreeSpace {
                                 TreeSpace(TreeCache* tc, std::string st);
                                ~TreeSpace(void);
         void                    characterize(void);
+
+                                // Basin summary (effective number of basins, peak counts, MAP-basin mass, ...)
+                                // computed from the current peaks; auto-characterizes if needed. Public so a
+                                // landscape screen can read effectiveNumBasins without going through a file.
+        BasinSummary            basinSummary(void) { return computeBasinSummary(); }
         Peak*                   findPeak(uint64_t treeHash);
         Peak*                   findPeakForTreeWithHash(uint64_t treeHash);
         Peak*                   findPeakWithId(int id);

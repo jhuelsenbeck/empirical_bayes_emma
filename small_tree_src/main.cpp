@@ -1,7 +1,14 @@
+#include <filesystem>
 #include <iostream>
 #include <cstdlib>
 #include <sstream>
+#include <string>
+#include <system_error>
 #include <iomanip>
+#include <functional>
+#include <map>
+#include <utility>
+#include <vector>
 #include "Alignment.hpp"
 #include "BitSetFactory.hpp"
 #include "ExhaustiveSearch.hpp"
@@ -10,6 +17,7 @@
 #include "MapTree.hpp"
 #include "MarkovChainAnalyzer.hpp"
 #include "Mcmc.hpp"
+#include "Msg.hpp"
 #include "RandomVariable.hpp"
 #include "Threads.hpp"
 #include "TreeCache.hpp"
@@ -19,15 +27,19 @@
 #include "TreeSpace.hpp"
 #include "UserSettings.hpp"
 
+void ensureOutputDirectory(const std::string& outputPath);
+std::multimap<double, Alignment*> generateBadLandscapes(RandomVariable* rng, ThreadPool* threads, Alignment* originalAlignment, int numReplicates, int numTwists);
 void generateNeighbors(TreeCache& treeCache, TreeNeighbors& generator, std::string label);
 void printHeader(void);
 std::string powerLabel(double x);
+static void recomputeLikelihoods(TreeCache& cache, Alignment* alignment, ThreadPool* threads);
+
 
 
 int main(int argc, char* argv[]) {
 
     printHeader();
-    
+
     // instantiate random variable and thread pool objects
     RandomVariable rng;
     ThreadPool threads;
@@ -36,90 +48,98 @@ int main(int argc, char* argv[]) {
     UserSettings& settings = UserSettings::userSettings();
     settings.readSettings(argc, argv);
     settings.print();
+    ensureOutputDirectory(settings.getOutputDirectoryName());
     bool analyticsOnly = false;
     int numTaxa = 10;
     int nReps = 50;
-    
+
     // read the alignment file
     Alignment* originalAlignment = new Alignment(settings.getInputFileName());
     Alignment* data = originalAlignment;
     if (originalAlignment->getNumTaxa() > numTaxa)
         data = new Alignment(*originalAlignment, numTaxa, &rng);
-    if (settings.getNumTwists() > 0)
-        data->twist(&rng, settings.getNumTwists());
+    if (settings.getNumTwists() > 1)
+        {
+        std::multimap<double, Alignment*> twistedAlignments = generateBadLandscapes(&rng, &threads, data, 100, settings.getNumTwists());
+
+        data = twistedAlignments.rbegin()->second;
+        std::cout << "   * Selecting alignment with " << twistedAlignments.rbegin()->first << " peaks (TBR)" << std::endl;
+        for (auto [key,val] : twistedAlignments)
+            delete val;
+        if (originalAlignment->getNumTaxa() > numTaxa)
+            delete data;
+        delete originalAlignment;
+        std::cout << "   Completed generating twisted data matrices" << std::endl;
+        return EXIT_SUCCESS;
+        }
+    BitSetFactory::getFactory().initialize(data->getNumTaxa());
     data->print(settings.getOutputFileName() + ".nex");
     data->summarize();
     data->compress();
-    BitSetFactory::getFactory().initialize(data->getNumTaxa());
-
+        
     // integrate branch lengths out under an IID Exp() prior (Laplace) in addition to the ML fit
-    LikelihoodCalculator::setComputeMarginalLikelihood(true);  // set to false to skip the marginal and keep only the profile/ML likelihood
-    LikelihoodCalculator::setExponentialPriorRate(10.0);       // change the prior rate here if needed
-    LikelihoodCalculator::setMarginalHessianMethod(1);         // Hessian for the Laplace volume term: 0 = diagonal only, 1 = full via finite differences (default)
+    LikelihoodCalculator::setComputeMarginalLikelihood(true);
+    LikelihoodCalculator::setExponentialPriorRate(10.0);
+    LikelihoodCalculator::setMarginalHessianMethod(1);
 
-    // calculate likelihoods of all trees
+    // Build the canonical tree set once (in the NNI cache) and inject the trees + likelihoods into the
+    // NNI2 and TBR caches. Each cache keeps its own copies because the move-set neighborhoods differ.
     TreeCache treeCacheNni("NNI");
     TreeLikelihoods treeLikelihoods(&treeCacheNni);
     ExhaustiveSearch exhaustive(data, &treeCacheNni, &threads);
-    treeCacheNni.calculatePosteriorProbabilities();            // normalize likelihoods (profile and hierarchical)
-    
-    // instantiate tree cache objects for NNI2 and TBR
+    treeCacheNni.calculatePosteriorProbabilities();
+
     TreeCache treeCacheNni2("NNI2");
     treeCacheNni2.injectTreesAndLikelihoods(&treeCacheNni);
     TreeCache treeCacheTbr("TBR");
     treeCacheTbr.injectTreesAndLikelihoods(&treeCacheNni);
 
-    // generate the neighbors for each tree under NNI, NNI2, and TBR
+    // Generate every move-set's neighbors up front. NNI2 is built from the NNI neighborhoods, so the
+    // NNI neighbors must still exist when NNI2 is generated, which is why all neighbor generation
+    // happens here, before any cache is released below.
     TreeNeighborGeneratorNNI treeNeighborGeneratorNni(&treeCacheNni);
     TreeNeighbors treeNeighborsNni(&treeCacheNni, &treeNeighborGeneratorNni, data->getNumTaxa());
     generateNeighbors(treeCacheNni, treeNeighborsNni, "NNI");
+
     TreeNeighborGeneratorNNI2 treeNeighborGeneratorNni2(&treeCacheNni2, &treeCacheNni);
     TreeNeighbors treeNeighborsNni2(&treeCacheNni2, &treeNeighborGeneratorNni2, data->getNumTaxa());
     generateNeighbors(treeCacheNni2, treeNeighborsNni2, "NNI2");
+
     TreeNeighborGeneratorTBR treeNeighborGeneratorTbr(&treeCacheTbr);
     TreeNeighbors treeNeighborsTbr(&treeCacheTbr, &treeNeighborGeneratorTbr, data->getNumTaxa());
     generateNeighbors(treeCacheTbr, treeNeighborsTbr, "TBR");
-    
-    // determine the tree landscapes for NNI, NNI2, and TBR
-    TreeSpace treeSpaceNni(&treeCacheNni, "NNI");
-    treeSpaceNni.characterize();
-    treeSpaceNni.printPosterior();
-    treeSpaceNni.printPosterior(settings.getOutputFileName() + ".nni.true");
-    treeSpaceNni.writeRuggednessStatistics(settings.getOutputFileName() + ".nni.ruggedness.tsv");
 
-    TreeSpace treeSpaceNni2(&treeCacheNni2, "NNI2");
-    treeSpaceNni2.characterize();
-    treeSpaceNni2.printPosterior();
-    treeSpaceNni2.printPosterior(settings.getOutputFileName() + ".nni2.true");
-    treeSpaceNni2.writeRuggednessStatistics(settings.getOutputFileName() + ".nni2.ruggedness.tsv");
-
-    TreeSpace treeSpaceTbr(&treeCacheTbr, "TBR");
-    treeSpaceTbr.characterize();
-    treeSpaceTbr.printPosterior();
-    treeSpaceTbr.printPosterior(settings.getOutputFileName() + ".tbr.true");
-    treeSpaceTbr.writeRuggednessStatistics(settings.getOutputFileName() + ".tbr.ruggedness.tsv");
-
-    // find the MAP tree
+    // MAP tree. Its partitions are read from the Tree objects, so build it before freeing them, and
+    // snapshot the MAP hash and each split's member-tree hashes into cache-independent structures so
+    // the per-move analytics below do not depend on any particular cache (or its trees) staying alive.
     MapTree mapTree(&treeCacheNni);
-            
-    // analytics using the kernel of the Markov chain
-    std::vector<TreeCache*> caches = { &treeCacheNni, &treeCacheNni2, &treeCacheTbr };
-    std::vector<TreeSpace*> spaces = { &treeSpaceNni, &treeSpaceNni2, &treeSpaceTbr };
-    std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3 };
-    bool writeSmallStateFiles = (data->getNumTaxa() <= 8);
+    uint64_t mapHash = mapTree.getMapTree();
+    std::vector<std::pair<std::string, std::vector<uint64_t>>> partitionHashLists;
+    for (const auto& [part, trees] : mapTree.getPartitions())
+        {
+        std::vector<uint64_t> hashes;
+        hashes.reserve(trees.size());
+        for (TreeInfo* info : trees)
+            hashes.push_back(info->hash);
+        partitionHashLists.emplace_back(mapTree.partitionString(part), std::move(hashes));
+        }
 
-    // Per-basin barrier table, written once. Barriers are power-independent, so this sits outside the
-    // power loop; the per-tree state report is joined to it on (moveType, basinPeakId) during analysis.
+    // Release the heavyweight Tree objects now. Neighbor generation and the MAP-tree partitions are
+    // the only consumers of TreeInfo::tree; the kernel analysis and the profile MCMC read only hashes,
+    // neighbour pointers, and cached likelihoods. At ten taxa these objects (held across three caches)
+    // are the dominant memory cost, and freeing them here keeps the analytics phase's working set in
+    // RAM instead of thrashing the page compressor.
+    treeCacheNni.freeTreeObjects();
+    treeCacheNni2.freeTreeObjects();
+    treeCacheTbr.freeTreeObjects();
+
+    // Output files (shared across all moves and powers; rows are self-identifying via their columns).
     std::string basinTableFileName = settings.getOutputFileName() + ".basins.tsv";
     std::ofstream basinsOut(basinTableFileName);
     if (!basinsOut)
         throw std::runtime_error("Could not open basin table file: " + basinTableFileName);
     TreeSpace::writeBasinTableHeader(basinsOut);
-    for (TreeSpace* space : spaces)
-        space->writeBasinTable(basinsOut, mapTree.getMapTree());
-    basinsOut.close();
-    std::cout << "   Basin barrier table written to " << basinTableFileName << "\n";
-    
+
     std::string diagnosticsFileName = settings.getOutputFileName() + ".markov.tsv";
     std::ofstream diagnosticsOut(diagnosticsFileName);
     if (!diagnosticsOut)
@@ -136,93 +156,189 @@ int main(int argc, char* argv[]) {
     MarkovChainAnalyzer::writeEfficiencyTsvHeader(effOut);
     LandscapeMixingCollator::writeStateReportHeader(stateOut);
 
-    for (double power : powers)
+    std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3 };
+    bool writeSmallStateFiles = (data->getNumTaxa() <= 8);
+
+    // The exact analytics for one move set: landscape, basin table, and the per-power kernel diagnostics.
+    auto analyzeMove = [&](TreeCache* c, const std::string& moveName, const std::string& fileTag) 
         {
-        for (size_t i=0; i<caches.size(); i++)
+        TreeSpace space(c, moveName);
+        space.characterize();
+        space.printPosterior();
+        space.printPosterior(settings.getOutputFileName() + "." + fileTag + ".true");
+        space.writeRuggednessStatistics(settings.getOutputFileName() + "." + fileTag + ".ruggedness.tsv");
+        space.writeBasinTable(basinsOut, mapHash);
+        basinsOut.flush();
+
+        for (double power : powers)
             {
-            TreeCache* c = caches[i];
-            std::cout << "   Analyzing " << c->getName() << " with power " << power << "\n";
+            std::cout << "   Analyzing " << moveName << " with power " << power << "\n";
 
             c->sortNeighborsByLikelihood();
             c->cacheNeighborProposalProbabilities(power);
 
-            MarkovChainAnalyzer analyzer(&threads, c, c->getName() + " (" + std::to_string(power) + ")", true); // true -> forces sparse
+            MarkovChainAnalyzer analyzer(&threads, c, moveName + " (" + std::to_string(power) + ")", true);
 
-            // Per-tree join of the kernel's dynamics with the landscape, one row per topology, appended
-            // to a single file across every move and power. This replaces the former per-move mfpt file,
-            // whose name was not power-stamped and so held only the last power analyzed. The mean
-            // first-passage time is a full sparse solve, so this is the cost driver of the per-power loop.
-            LandscapeMixingCollator::writeStateReport(stateOut, c->getName(), power, analyzer, *spaces[i], mapTree.getMapTree());
+            LandscapeMixingCollator::writeStateReport(stateOut, moveName, power, analyzer, space, mapHash);
             stateOut.flush();
 
-            analyzer.writeEfficiencyTsvRow(effOut, c->getName(), power, "MAPtree", analyzer.efficiencyFor(analyzer.indicatorForTree(mapTree.getMapTree())));
-            for (const auto& [part, trees] : mapTree.getPartitions())
-                {
-                std::vector<uint64_t> hashes;
-                hashes.reserve(trees.size());
-                for (TreeInfo* info : trees)
-                    hashes.push_back(info->hash);
-                analyzer.writeEfficiencyTsvRow(effOut, c->getName(), power, mapTree.partitionString(part), analyzer.efficiencyFor(analyzer.indicatorForTrees(hashes)));
-                }
-            analyzer.writeTsvRow(diagnosticsOut, c->getName(), power);
+            analyzer.writeEfficiencyTsvRow(effOut, moveName, power, "MAPtree",
+                                           analyzer.efficiencyFor(analyzer.indicatorForTree(mapHash)));
+            for (const auto& [label, hashes] : partitionHashLists)
+                analyzer.writeEfficiencyTsvRow(effOut, moveName, power, label,
+                                               analyzer.efficiencyFor(analyzer.indicatorForTrees(hashes)));
+
+            analyzer.writeTsvRow(diagnosticsOut, moveName, power);
             diagnosticsOut.flush();
             effOut.flush();
 
             if (writeSmallStateFiles)
                 {
-                std::string prefix = settings.getOutputFileName() + "." + c->getName() + ".beta_" + powerLabel(power);
-                std::cout << "   Writing small-state exact files with prefix " << prefix << "\n";
+                std::string prefix = settings.getOutputFileName() + "." + moveName + ".beta_" + powerLabel(power);
                 analyzer.writeSmallStateAnalysisFiles(prefix, false, true, false);
                 }
             }
-        }
-    std::cout << "   Markov-chain diagnostics written to " << diagnosticsFileName << "\n";
-           
+        };
+
+    // Process each move set to completion -- analytics, then its MCMC runs -- and free its cache before
+    // moving on, so beyond the shared tree metadata only one move's neighbour/kernel data is ever live.
+
+    // NNI (also carries the Metropolis-coupled and Gibbs runs, which sample the NNI cache)
+    analyzeMove(&treeCacheNni, "NNI", "nni");
     if (analyticsOnly == false)
         {
-        // Markov chain Monte Carlo exploration of tree space    
         for (double power : powers)
             {
-            std::string convergenceFileName = ".conv_NNI_" + std::to_string(power);
-            std::string label = "MCMC (NNI, " + std::to_string(power) + ")";
-            Mcmc mcmc1(&rng, &treeCacheNni, data, true, convergenceFileName);
-            mcmc1.run(label, power, 0, nReps);
+            std::string cfn = ".conv_NNI_" + std::to_string(power);
+            Mcmc mcmc(&rng, &treeCacheNni, data, true, cfn);
+            mcmc.run("MCMC (NNI, " + std::to_string(power) + ")", power, 0, nReps);
 
-            convergenceFileName = ".conv_NNI2_" + std::to_string(power);
-            label = "MCMC (NNI2, " + std::to_string(power) + ")";
-            Mcmc mcmc2(&rng, &treeCacheNni2, data, true, convergenceFileName);
-            mcmc2.run(label, power, 0, nReps);
-            
-            convergenceFileName = ".conv_TBR_" + std::to_string(power);
-            label = "MCMC (TBR, " + std::to_string(power) + ")";
-            Mcmc mcmc3(&rng, &treeCacheTbr, data, true, convergenceFileName);
-            mcmc3.run(label, power, 0, nReps);
-            
-            convergenceFileName = ".conv_rTBR_" + std::to_string(power);
-            label = "MCMC (rTBR, " + std::to_string(power) + ")";
-            Mcmc mcmc4(&rng, &treeCacheTbr, data, true, convergenceFileName);
-            mcmc4.run(label, power, 2*(data->getNumTaxa()-3), nReps);
-            
-            convergenceFileName = ".conv_mc3_NNI_" + std::to_string(power);
-            label = "MCMCMC (NNI, " + std::to_string(power) + ")";
-            Mcmc mcmcmc(&rng, &treeCacheNni, data, true, convergenceFileName);
-            mcmcmc.run(label, power, 0, nReps, 4);
+            cfn = ".conv_mc3_NNI_" + std::to_string(power);
+            Mcmc mcmcmc(&rng, &treeCacheNni, data, true, cfn);
+            mcmcmc.run("MCMCMC (NNI, " + std::to_string(power) + ")", power, 0, nReps, 4);
             }
-            
-        std::string convergenceFileName = ".conv_Gibbs";
-        std::string label = "MCMC (Gibbs)";
-        Mcmc gibbs(&rng, &treeCacheNni, data, true, convergenceFileName);
-        gibbs.run(label, nReps);
+        Mcmc gibbs(&rng, &treeCacheNni, data, true, ".conv_Gibbs");
+        gibbs.run("MCMC (Gibbs)", nReps);
         }
+    treeCacheNni.freeTreeCache();
+
+    // NNI2
+    analyzeMove(&treeCacheNni2, "NNI2", "nni2");
+    if (analyticsOnly == false)
+        {
+        for (double power : powers)
+            {
+            std::string cfn = ".conv_NNI2_" + std::to_string(power);
+            Mcmc mcmc(&rng, &treeCacheNni2, data, true, cfn);
+            mcmc.run("MCMC (NNI2, " + std::to_string(power) + ")", power, 0, nReps);
+            }
+        }
+    treeCacheNni2.freeTreeCache();
+
+    // TBR (also carries the rTBR multiple-try runs, which sample the TBR cache)
+    analyzeMove(&treeCacheTbr, "TBR", "tbr");
+    if (analyticsOnly == false)
+        {
+        for (double power : powers)
+            {
+            std::string cfn = ".conv_TBR_" + std::to_string(power);
+            Mcmc mcmc(&rng, &treeCacheTbr, data, true, cfn);
+            mcmc.run("MCMC (TBR, " + std::to_string(power) + ")", power, 0, nReps);
+
+            cfn = ".conv_rTBR_" + std::to_string(power);
+            Mcmc rtbr(&rng, &treeCacheTbr, data, true, cfn);
+            rtbr.run("MCMC (rTBR, " + std::to_string(power) + ")", power, 2 * (data->getNumTaxa() - 3), nReps);
+            }
+        }
+    treeCacheTbr.freeTreeCache();
+
+    basinsOut.close();
+    std::cout << "   Basin barrier table written to " << basinTableFileName << "\n";
+    std::cout << "   Markov-chain diagnostics written to " << diagnosticsFileName << "\n";
 
     // clean up
     if (originalAlignment->getNumTaxa() > numTaxa)
         delete data;
     delete originalAlignment;
-    treeCacheNni.freeTreeCache();
-    treeCacheTbr.freeTreeCache();
-    
+
     return EXIT_SUCCESS;
+}
+
+void ensureOutputDirectory(const std::string& outputDir) {
+
+    if (outputDir.empty())
+        return;
+
+    std::filesystem::path dir(outputDir);        // the whole path is the directory; nothing is stripped
+
+    std::error_code ec;
+    if (std::filesystem::exists(dir, ec))
+        {
+        if (!std::filesystem::is_directory(dir, ec))
+            Msg::error("Output path exists but is not a directory: " + dir.string());
+        return;
+        }
+
+    if (!std::filesystem::create_directories(dir, ec) || ec)
+        Msg::error("Could not create output directory '" + dir.string() + "': " + ec.message());
+
+    std::cout << "   Created output directory " << dir.string() << std::endl;
+}
+
+std::multimap<double, Alignment*> generateBadLandscapes(RandomVariable* rng, ThreadPool* threads, Alignment* originalAlignment, int numReplicates, int numTwists) {
+
+    std::cout << "   Generating twisted landscapes" << std::endl;
+    std::cout << "   * Number of twists: " << numTwists << std::endl;
+    std::cout << "   * Number of landscapes: " << numReplicates << std::endl << std::endl;
+    // re-enable the marginal later, on the few winners.
+    LikelihoodCalculator::setComputeMarginalLikelihood(false);
+
+    int numTaxa = originalAlignment->getNumTaxa();
+
+    // fix the taxon set once, so every replicate shares the same enumerated trees and TBR neighbourhoods
+    Alignment* base = new Alignment(*originalAlignment, numTaxa, rng);
+    BitSetFactory::getFactory().initialize(base->getNumTaxa());
+
+    // enumerate the trees and build the TBR neighbourhoods once
+    TreeCache cache("TBR");
+    TreeLikelihoods treeLikelihoods(&cache);
+    ExhaustiveSearch exhaustive(base, &cache, threads);            // enumerates + an initial (discarded) pass
+    TreeNeighborGeneratorTBR gen(&cache);
+    TreeNeighbors neighbors(&cache, &gen, base->getNumTaxa());
+    generateNeighbors(cache, neighbors, "TBR");
+
+    std::multimap<double, Alignment*> byBasins; // key: effectiveNumBasins (TBR)
+
+    for (int i=0; i<numReplicates; i++)
+        {
+        Alignment* a = new Alignment(*base);
+        a->twist(rng, numTwists);
+        a->compress();
+
+        recomputeLikelihoods(cache, a, threads);
+        cache.calculatePosteriorProbabilities();
+
+        TreeSpace space(&cache, "TBR");
+        space.characterize();
+        BasinSummary bs = space.basinSummary();
+
+        byBasins.insert( {bs.effectiveNumBasins, a} );
+        std::cout << "   [landscape screen] " << (i + 1) << "/" << numReplicates
+                  << ": effectiveNumBasins=" << bs.effectiveNumBasins
+                  << "  peaks(mass>0.05)=" << bs.numPeaksMassGreater05
+                  << "  outsideMapBasin=" << bs.posteriorMassOutsideMapBasin << "\n";
+
+        char temp[20];
+        snprintf(temp, sizeof(temp), "%1.6lf", bs.effectiveNumBasins);
+        std::string numPeaksStr(temp);
+        std::string fileName = UserSettings::userSettings().getOutputFileName() + "_" + std::to_string(i+1) + "_" + numPeaksStr + ".nex";
+        a->print(fileName);
+        }
+
+    delete base;
+    cache.freeTreeCache();
+    
+    return byBasins;
 }
 
 void generateNeighbors(TreeCache& treeCache, TreeNeighbors& treeNeighbors, std::string label) {
@@ -263,21 +379,6 @@ void generateNeighbors(TreeCache& treeCache, TreeNeighbors& treeNeighbors, std::
         }
 
     std::cout << "]" << std::endl << std::endl;
-    
-#   if 0
-    int num = 0, sum = 0, min=(int)cache.size() + 1, max=0;
-    for (auto& [key,val] : cache)
-        {
-        num++;
-        int x = (int)val->neighbors.size();
-        if (x < min) 
-            min = x;
-        if (x > max)
-            max = x;
-        sum += x;
-        }
-    std::cout << "Average number of neighbors = " << (double)sum / num << " (" << min << " " << max << ")" << std::endl;
-#   endif
 }
 
 void printHeader(void) {
@@ -303,5 +404,47 @@ std::string powerLabel(double x) {
             c = 'p';
         }
     return s;
+}
+
+// Recompute the profile log likelihood of every tree already in the cache under a new alignment,
+// reusing the existing Tree topologies (which do not depend on the sequence data). This mirrors the
+// likelihood pass of ExhaustiveSearch::enumerateAllTrees, without re-enumerating.
+static void recomputeLikelihoods(TreeCache& cache, Alignment* alignment, ThreadPool* threads) {
+
+    TreeCacheMap& tCache = cache.getCache();
+    size_t numTrees = tCache.size();
+    size_t maxJobs  = threads->getQueueCapacity();
+    if (numTrees < maxJobs)
+        maxJobs = numTrees;
+
+    std::vector<LikelihoodCalculator> calculators;
+    calculators.reserve(maxJobs);
+    for (size_t i = 0; i < maxJobs; i++)
+        calculators.emplace_back(alignment);
+
+    size_t cnt = 0;
+    auto harvest = [&](void) {
+        threads->wait();
+        for (size_t i = 0; i < cnt; i++)
+            {
+            calculators[i].getTreeInfo()->lnLikelihood    = calculators[i].getResult();
+            calculators[i].getTreeInfo()->hasLnLikelihood = true;
+            }
+        cnt = 0;
+    };
+
+    for (auto& [key, val] : tCache)
+        {
+        if (val == nullptr || val->tree == nullptr)
+            continue;
+        calculators[cnt].setTree(val->tree);
+        calculators[cnt].setTreeInfo(val);
+        calculators[cnt].setOffset(0);
+        threads->pushTask(&calculators[cnt]);
+        if (++cnt == maxJobs)
+            harvest();
+        }
+    if (cnt > 0)
+        harvest();
 }
 

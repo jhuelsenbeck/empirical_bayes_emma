@@ -145,6 +145,55 @@ void TreeCache::calculatePosteriorProbabilities(void) {
         }
 }
 
+void TreeCache::freeTreeObjects(void) {
+
+    // Release the heavyweight Tree objects; keep compact encodings, neighbors, likelihoods, posteriors
+    // and the cached proposal scalars. Safe once the neighbor generators (which read val->tree) and the
+    // MapTree partitions (Tree::getPartitions) have run. At ten taxa these objects, held three times
+    // over, are the dominant memory cost, so freeing them before the analytics loop is what keeps the
+    // working set in RAM.
+    for (auto& [hash, info] : treeCache)
+        {
+        if (info == nullptr)
+            continue;
+        if (info->tree != nullptr)
+            {
+            delete info->tree;
+            info->tree = nullptr;
+            }
+        }
+}
+
+void TreeCache::freeNeighbors(void) {
+
+    for (auto& [hash, info] : treeCache)
+        {
+        if (info == nullptr)
+            continue;
+        std::vector<TreeInfo*>().swap(info->neighbors);                 // release capacity, not just size
+        std::vector<double>().swap(info->neighborProposalProbabilities);
+        info->hasNeighbors = false;
+        info->hasNeighborProposalProbabilities = false;
+        info->neighborProposalPower   = std::numeric_limits<double>::quiet_NaN();
+        info->neighborMaxLnL          = std::numeric_limits<double>::quiet_NaN();
+        info->neighborProposalNormInv = std::numeric_limits<double>::quiet_NaN();
+        }
+}
+
+void TreeCache::freeNeighborProposalProbabilities(void) {
+
+    for (auto& [hash, info] : treeCache)
+        {
+        if (info == nullptr)
+            continue;
+        std::vector<double>().swap(info->neighborProposalProbabilities);
+        info->hasNeighborProposalProbabilities = false;
+        info->neighborProposalPower   = std::numeric_limits<double>::quiet_NaN();
+        info->neighborMaxLnL          = std::numeric_limits<double>::quiet_NaN();
+        info->neighborProposalNormInv = std::numeric_limits<double>::quiet_NaN();
+        }
+}
+
 void TreeCache::freeTreeCache(void) {
 
     for (auto& pair : treeCache) 

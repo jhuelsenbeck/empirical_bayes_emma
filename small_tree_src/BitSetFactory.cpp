@@ -1,3 +1,4 @@
+#include <iostream>
 #include "BitSet.hpp"
 #include "BitSetFactory.hpp"
 #include "Msg.hpp"
@@ -36,7 +37,7 @@ BitSet* BitSetFactory::getBitSet(void) {
 void BitSetFactory::initialize(int nt) {
 
     if (isInitialized == true)
-        Msg::error("BitSet Factory is already initialized");
+        return;
     numTaxa = nt;
     isInitialized = true;
 }

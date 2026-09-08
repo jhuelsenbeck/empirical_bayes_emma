@@ -18,6 +18,8 @@ UserSettings::UserSettings(void) {
     sampleFrequency = 100;
     inputFileName = "";
     outputFileName = "";
+    outputDirectoryName = "";
+    outputFileNameStub = "";
     burnin = 0.0;
     numTwists = 0;
 }
@@ -38,6 +40,7 @@ void UserSettings::readSettings(int argc, char* argv[]) {
         userCommands.push_back( argv[i] );
         
     // set default values
+    // done on construction
     
     // check the vector of commands
     if (userCommands.size() / 2 == 0)
@@ -61,13 +64,17 @@ void UserSettings::readSettings(int argc, char* argv[]) {
             {
             if (key == "-i")
                 inputFileName = cmd;
-            else if (key == "-o")
-                outputFileName = cmd;
+            //else if (key == "-o")
+            //    outputFileName = cmd;
+            else if (key == "-d")
+                outputDirectoryName = cmd;
+            else if (key == "-f")
+                outputFileNameStub = cmd;
             else if (key == "-n")
                 chainLength = stod(cmd);
             else if (key == "-t")
                 temperature = stof(cmd);
-            else if (key == "-d")
+            else if (key == "-b")
                 burnin = stof(cmd);
             else if (key == "-p")
                 printFrequency = stod(cmd);
@@ -83,20 +90,30 @@ void UserSettings::readSettings(int argc, char* argv[]) {
             }
         }
         
+    // set output file name from directory name and file stub name
+    if (outputDirectoryName == "" || outputFileNameStub == "")
+        Msg::error("Problem specifying output file name");
+    if (outputDirectoryName.back()  == '/' && outputFileNameStub.front() != '/')
+        outputFileName = outputDirectoryName + outputFileNameStub;
+    else if (outputDirectoryName.back()  != '/' && outputFileNameStub.front() == '/')
+        outputFileName = outputDirectoryName + outputFileNameStub;
+    else 
+        outputFileName = outputDirectoryName + "/" + outputFileNameStub;
+        
     settingsInitialized = true;
 }
 
 void UserSettings::print(void) {
 
     std::cout << "   User settings:" << std::endl;
-    std::cout << "   * Input file name (-i)            = " << inputFileName << std::endl;
-    std::cout << "   * Output file name (-o)           = " << outputFileName << std::endl;
-    std::cout << "   * Temperature (-t)                = " << temperature << std::endl;
-    std::cout << "   * Chain length (-n)               = " << chainLength << std::endl;
-    std::cout << "   * Burn in fraction (-d)           = " << burnin << std::endl;
-    std::cout << "   * Print frequency (-p)            = " << printFrequency << std::endl;
-    std::cout << "   * Sample frequency (-s)           = " << sampleFrequency << std::endl;
-    std::cout << "   * Num alignment twists (-w)       = " << numTwists << std::endl;
+    std::cout << "   * Input file name (-i)      = " << inputFileName << std::endl;
+    std::cout << "   * Output file name (-o)     = " << getOutputFileName() << std::endl;
+    std::cout << "   * Temperature (-t)          = " << temperature << std::endl;
+    std::cout << "   * Chain length (-n)         = " << chainLength << std::endl;
+    std::cout << "   * Burn in fraction (-d)     = " << burnin << std::endl;
+    std::cout << "   * Print frequency (-p)      = " << printFrequency << std::endl;
+    std::cout << "   * Sample frequency (-s)     = " << sampleFrequency << std::endl;
+    std::cout << "   * Num alignment twists (-w) = " << numTwists << std::endl;
     std::cout << std::endl;
 }
 

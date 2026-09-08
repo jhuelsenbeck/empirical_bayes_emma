@@ -23,6 +23,8 @@
 #include <limits>
 #include <numeric>
 #include <random>
+#include <chrono>
+
 #include <set>
 #include <deque>
 #include <unordered_map>
@@ -176,6 +178,8 @@ namespace {
     };
 
 } // anonymous namespace
+
+double MarkovChainAnalyzer::s_solveBudgetSeconds = 1800.0;
 
 void AnalyzerSymOp::perform_op(const double* x_in, double* y_out) const {
 
@@ -892,6 +896,11 @@ bool MarkovChainAnalyzer::conjugateGradient(const std::function<void(const Vecto
     Eigen::Index N = b.size();
     x = Vector::Zero(N);
 
+    using CgClock = std::chrono::steady_clock;
+    const CgClock::time_point cgDeadline =
+        CgClock::now() + std::chrono::duration_cast<CgClock::duration>(
+                             std::chrono::duration<double>(s_solveBudgetSeconds));
+
     double bNorm = b.norm();
     if (bNorm == 0.0)
         {
@@ -908,6 +917,8 @@ bool MarkovChainAnalyzer::conjugateGradient(const std::function<void(const Vecto
 
     for (iterations = 0; iterations < maxIterations; ++iterations)
         {
+        if ((iterations & 255) == 0 && CgClock::now() >= cgDeadline)
+            break;                                                // budget spent -> return not-converged
         applyA(p, Ap);
         double pAp = p.dot(Ap);
         if (!(pAp > 0.0))
@@ -1192,9 +1203,48 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
     double bestResidual = std::numeric_limits<double>::infinity();
     int attemptNumber = 0;
 
+    // Wall-clock cap. On a collapsed, near-degenerate spectrum the restarted Lanczos can iterate for
+    // hours making little progress; rather than stall the whole run we drive compute() one restart at a
+    // time (it resumes from its current factorization) and stop when the budget is spent.
+    using SolveClock = std::chrono::steady_clock;
+    const SolveClock::time_point solveDeadline =
+        SolveClock::now() + std::chrono::duration_cast<SolveClock::duration>(
+                                std::chrono::duration<double>(s_solveBudgetSeconds));
+    bool timedOut = false;
+
+    auto computeCapped = [&](auto& eigs, Spectra::SortRule rule, int maxit, double tol, const char* which) -> int
+        {
+        // Drive Spectra in coarse batches so its internal restart loop runs at full speed, checking the
+        // clock only between batches. One-restart-at-a-time chunking made each restart pay the per-call
+        // overhead (convergence test, Ritz re-sort) and slowed otherwise-quick solves to a crawl; a
+        // batch of many restarts restores the original speed while still bounding the wall-clock to at
+        // most one extra batch beyond the budget.
+        const int batch = 200;
+        auto t0 = SolveClock::now();
+        eigs.init();
+        int nconv = 0, restarts = 0;
+        for (int done = 0; done < maxit; done += batch)
+            {
+            int step = std::min(batch, maxit - done);
+            nconv = (int)eigs.compute(rule, step, tol);
+            if (eigs.info() == Spectra::CompInfo::Successful)
+                break;
+            if (SolveClock::now() >= solveDeadline)
+                { timedOut = true; break; }
+            }
+        restarts = (int)eigs.num_iterations();                    // actual restarts performed
+        double secs = std::chrono::duration<double>(SolveClock::now() - t0).count();
+        std::cerr << "   [" << name << " " << which << "] " << restarts << " restarts, "
+                  << secs << " s, converged=" << (eigs.info() == Spectra::CompInfo::Successful)
+                  << (timedOut ? " (budget spent)" : "") << "\n";
+        return nconv;
+        };
+
     for (const SolverAttempt& attempt : attempts)
         {
         attemptNumber++;
+        if (timedOut)
+            break;
 
         int ncvTop = std::max(attempt.ncv, nev + 2);
         ncvTop = std::min(ncvTop, static_cast<int>(n));
@@ -1207,10 +1257,9 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
         int nconvTop = 0, nconvBot = 0;
         try
             {
-            eigsTop.init();
-            nconvTop = (int)eigsTop.compute(Spectra::SortRule::LargestAlge, attempt.maxit, attempt.tol);
-            eigsBot.init();
-            nconvBot = (int)eigsBot.compute(Spectra::SortRule::SmallestAlge, attempt.maxit, attempt.tol);
+            nconvTop = computeCapped(eigsTop, Spectra::SortRule::LargestAlge, attempt.maxit, attempt.tol, "top");
+            if (!timedOut)
+                nconvBot = computeCapped(eigsBot, Spectra::SortRule::SmallestAlge, attempt.maxit, attempt.tol, "bot");
             }
         catch (const std::exception& e)
             {
@@ -1218,6 +1267,9 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
                       << " failed internally (" << e.what() << "); retrying with a larger subspace.\n";
             continue;
             }
+
+        if (timedOut)
+            break;
 
         SpectralInfo info;
         info.computed_sparse = true;
@@ -1334,6 +1386,18 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
             bestResidual = maxResidual;
             bestInfo = info;
             }
+        }
+
+    if (timedOut)
+        {
+        bestInfo.spectral_status = "solver_timed_out";
+        bestInfo.spectral_valid  = false;
+        bestInfo.spectral_gap    = std::numeric_limits<double>::quiet_NaN();
+        bestInfo.relaxation_time = std::numeric_limits<double>::quiet_NaN();
+        bestInfo.worst_case_iact = std::numeric_limits<double>::quiet_NaN();
+        std::cerr << "Note: eigensolver for " << name << " exceeded the " << s_solveBudgetSeconds
+                  << " s budget; reporting the spectral gap as unresolved (solver_timed_out).\n";
+        return bestInfo;
         }
 
     if (!bestInfo.spectral_valid) 
@@ -2159,7 +2223,18 @@ bool MarkovChainAnalyzer::leadingSymmetricEigensystem(int kLargest, int kSmalles
         ncv = std::min(ncv, static_cast<int>(n));
         Spectra::SymEigsSolver<Op> eigs(op, k, ncv);
         eigs.init();
-        eigs.compute(rule, 6000, 1e-12);
+        {
+        using LClock = std::chrono::steady_clock;
+        const LClock::time_point lDeadline =
+            LClock::now() + std::chrono::duration_cast<LClock::duration>(
+                                std::chrono::duration<double>(s_solveBudgetSeconds));
+        for (int done = 0; done < 6000; done += 200)
+            {
+            eigs.compute(rule, std::min(200, 6000 - done), 1e-12);
+            if (eigs.info() == Spectra::CompInfo::Successful) break;
+            if (LClock::now() >= lDeadline) break;
+            }
+        }
         if (eigs.info() != Spectra::CompInfo::Successful)
             return false;
         Eigen::VectorXd v = eigs.eigenvalues();

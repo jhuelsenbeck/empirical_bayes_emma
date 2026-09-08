@@ -57,7 +57,10 @@ class TreeCache {
         void            cacheNeighborProposalProbabilities(double power);
         size_t          cacheSize(void);
         void            calculatePosteriorProbabilities(void);
+        void            freeNeighbors(void);
+        void            freeNeighborProposalProbabilities(void);
         void            freeTreeCache(void);
+        void            freeTreeObjects(void);
         TreeCacheMap&   getCache(void) { return treeCache; }
         TreeInfo*       getTreeInfo(uint64_t treeHash);
         TreeInfo*       getOrCreateTreeInfo(Tree* t);
