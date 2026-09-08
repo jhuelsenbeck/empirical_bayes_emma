@@ -1,0 +1,36 @@
+
+-i /Users/johnh/Documents/Nexus/vertebrates.atpase6.nex -d /Users/johnh/Desktop/results_atpase6 -f res_atpase6 -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+-i /Users/johnh/Documents/Nexus/vertebrates.atpase8.nex -d /Users/johnh/Desktop/results_atpase8 -f res_atpase8 -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+-i /Users/johnh/Documents/Nexus/vertebrates.coi.nex     -d /Users/johnh/Desktop/results_coi     -f res_coi     -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+-i /Users/johnh/Documents/Nexus/vertebrates.coii.nex    -d /Users/johnh/Desktop/results_coii    -f res_coii    -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+-i /Users/johnh/Documents/Nexus/vertebrates.coiii.nex   -d /Users/johnh/Desktop/results_coiii   -f res_coiii   -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+-i /Users/johnh/Documents/Nexus/vertebrates.nd1.nex     -d /Users/johnh/Desktop/results_nd1     -f res_nd1     -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+-i /Users/johnh/Documents/Nexus/vertebrates.nd2.nex     -d /Users/johnh/Desktop/results_nd2     -f res_nd2     -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+-i /Users/johnh/Documents/Nexus/vertebrates.nd3.nex     -d /Users/johnh/Desktop/results_nd3     -f res_nd3     -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+-i /Users/johnh/Documents/Nexus/vertebrates.nd4.nex     -d /Users/johnh/Desktop/results_nd4     -f res_nd4     -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+-i /Users/johnh/Documents/Nexus/vertebrates.nd4l.nex    -d /Users/johnh/Desktop/results_nd4l    -f res_nd4l    -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+-i /Users/johnh/Documents/Nexus/vertebrates.nd6.nex     -d /Users/johnh/Desktop/results_nd6     -f res_nd6     -n 1000000 -p 100000 -b 0.1 -t 0.4 -w 0
+
+-i /Users/johnh/Documents/Nexus/vertebrates.atpase6.nex -d /Users/johnh/Desktop/twisted2_atpase6 -f atpase6 -w 2
+-i /Users/johnh/Documents/Nexus/vertebrates.atpase8.nex -d /Users/johnh/Desktop/twisted2_atpase8 -f atpase6 -w 2
+-i /Users/johnh/Documents/Nexus/vertebrates.coi.nex     -d /Users/johnh/Desktop/twisted2_coi     -f atpase6 -w 2
+-i /Users/johnh/Documents/Nexus/vertebrates.coii.nex    -d /Users/johnh/Desktop/twisted2_coii    -f atpase6 -w 2
+-i /Users/johnh/Documents/Nexus/vertebrates.coiii.nex   -d /Users/johnh/Desktop/twisted2_coiii   -f atpase6 -w 2
+-i /Users/johnh/Documents/Nexus/vertebrates.nd1.nex     -d /Users/johnh/Desktop/twisted2_nd1     -f atpase6 -w 2
+-i /Users/johnh/Documents/Nexus/vertebrates.nd2.nex     -d /Users/johnh/Desktop/twisted2_nd2     -f atpase6 -w 2
+-i /Users/johnh/Documents/Nexus/vertebrates.nd3.nex     -d /Users/johnh/Desktop/twisted2_nd3     -f atpase6 -w 2
+-i /Users/johnh/Documents/Nexus/vertebrates.nd4.nex     -d /Users/johnh/Desktop/twisted2_nd4     -f atpase6 -w 2
+-i /Users/johnh/Documents/Nexus/vertebrates.nd4l.nex    -d /Users/johnh/Desktop/twisted2_nd4l    -f atpase6 -w 2
+-i /Users/johnh/Documents/Nexus/vertebrates.nd6.nex     -d /Users/johnh/Desktop/twisted2_nd6     -f atpase6 -w 2
+
+-i /Users/johnh/Documents/Nexus/vertebrates.atpase6.nex -d /Users/johnh/Desktop/twisted5_atpase6 -f atpase6 -w 5
+-i /Users/johnh/Documents/Nexus/vertebrates.atpase8.nex -d /Users/johnh/Desktop/twisted5_atpase8 -f atpase6 -w 5
+-i /Users/johnh/Documents/Nexus/vertebrates.coi.nex     -d /Users/johnh/Desktop/twisted5_coi     -f atpase6 -w 5
+-i /Users/johnh/Documents/Nexus/vertebrates.coii.nex    -d /Users/johnh/Desktop/twisted5_coii    -f atpase6 -w 5
+-i /Users/johnh/Documents/Nexus/vertebrates.coiii.nex   -d /Users/johnh/Desktop/twisted5_coiii   -f atpase6 -w 5
+-i /Users/johnh/Documents/Nexus/vertebrates.nd1.nex     -d /Users/johnh/Desktop/twisted5_nd1     -f atpase6 -w 5
+-i /Users/johnh/Documents/Nexus/vertebrates.nd2.nex     -d /Users/johnh/Desktop/twisted5_nd2     -f atpase6 -w 5
+-i /Users/johnh/Documents/Nexus/vertebrates.nd3.nex     -d /Users/johnh/Desktop/twisted5_nd3     -f atpase6 -w 5
+-i /Users/johnh/Documents/Nexus/vertebrates.nd4.nex     -d /Users/johnh/Desktop/twisted5_nd4     -f atpase6 -w 5
+-i /Users/johnh/Documents/Nexus/vertebrates.nd4l.nex    -d /Users/johnh/Desktop/twisted5_nd4l    -f atpase6 -w 5
+-i /Users/johnh/Documents/Nexus/vertebrates.nd6.nex     -d /Users/johnh/Desktop/twisted5_nd6     -f atpase6 -w 5
