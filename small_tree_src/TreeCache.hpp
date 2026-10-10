@@ -56,7 +56,7 @@ class TreeCache {
                         TreeCache(std::string nm);
         void            cacheNeighborProposalProbabilities(double power);
         size_t          cacheSize(void);
-        void            calculatePosteriorProbabilities(void);
+        double          calculatePosteriorProbabilities(void);
         void            freeNeighbors(void);
         void            freeNeighborProposalProbabilities(void);
         void            freeTreeCache(void);

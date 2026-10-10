@@ -1,10 +1,10 @@
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <cstdlib>
 #include <sstream>
 #include <string>
 #include <system_error>
-#include <iomanip>
 #include <functional>
 #include <map>
 #include <utility>
@@ -87,7 +87,8 @@ int main(int argc, char* argv[]) {
     TreeCache treeCacheNni("NNI");
     TreeLikelihoods treeLikelihoods(&treeCacheNni);
     ExhaustiveSearch exhaustive(data, &treeCacheNni, &threads);
-    treeCacheNni.calculatePosteriorProbabilities();
+    double klDivergence = treeCacheNni.calculatePosteriorProbabilities();
+    std::cout << "KL = " << klDivergence << std::endl;
 
     TreeCache treeCacheNni2("NNI2");
     treeCacheNni2.injectTreesAndLikelihoods(&treeCacheNni);

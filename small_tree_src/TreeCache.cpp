@@ -67,7 +67,7 @@ size_t TreeCache::cacheSize(void) {
     return total;
 }
 
-void TreeCache::calculatePosteriorProbabilities(void) {
+double TreeCache::calculatePosteriorProbabilities(void) {
 
     // calculate the exact posterior probability
     double bestLnL = std::numeric_limits<double>::lowest();
@@ -92,9 +92,14 @@ void TreeCache::calculatePosteriorProbabilities(void) {
         val->posteriorProbability = x;
         sum += x;
         }
+    double kl = 0.0;
     double factor = 1.0 / sum;
+    double priorProb = 1.0 / treeCache.size();
     for (auto& [key,val] : treeCache)
-        val->posteriorProbability *= factor;     
+        {
+        val->posteriorProbability *= factor; 
+        kl += val->posteriorProbability * (log(val->posteriorProbability) - log(priorProb));
+        }    
         
     if (treeCache.begin()->second->hasLnMarginalLikelihood == true)
         {
@@ -143,6 +148,8 @@ void TreeCache::calculatePosteriorProbabilities(void) {
             }
         compOut.close();
         }
+        
+    return kl;
 }
 
 void TreeCache::freeTreeObjects(void) {
