@@ -46,8 +46,7 @@ class LikelihoodCalculator : public LikelihoodTask {
     
     private:
         double                      calculateLFS(double* clsUp, double* clsDn, TransitionMatrix& tMat, TransitionMatrix& fMat, TransitionMatrix& sMat, double& firstDerivative, double& secondDerivative);
-        double                      iterateBranch(Node* p);
-        double                      mapRefineBranchStep(Node* p, double lambda);
+        double                      iterateBranch(Node* p, double lambda = 0.0);
         void                        collectBranchNodes(std::vector<Node*>& order);
         void                        refreshAllConditionalLikelihoods(const std::vector<Node*>& order);
         void                        computeThetaGradient(const std::vector<Node*>& order, double lambda, std::vector<double>& G);
