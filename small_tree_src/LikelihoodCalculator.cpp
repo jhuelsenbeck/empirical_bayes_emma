@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include "Alignment.hpp"
 #include "ConditionalLikelihoods.hpp"
 #include "Msg.hpp"
@@ -80,73 +82,102 @@ double LikelihoodCalculator::calculateLFS(double* clsUp, double* clsDn, Transiti
     return lnL;
 }
 
-double LikelihoodCalculator::iterateBranch(Node* p) {
+double LikelihoodCalculator::iterateBranch(Node* p, double lambda) {
 
+    // Maximize, over the length v of the branch below p with the other branches held fixed, either
+    // the log likelihood (lambda == 0) or the log posterior in theta = log(v) under an Exp(lambda)
+    // prior, h(theta) = ell(v) - lambda v + theta up to a constant, the last term being the Jacobian
+    // of the log transform. Either way the return value is the log likelihood of the whole tree at
+    // the final length.
+    //
+    // Newton's method is applied in theta and safeguarded by a backtracking line search, so every
+    // accepted step increases the objective. Both matter near the lower bound. A Newton step in v
+    // that overshoots to minBrlen can only about double v per iteration on the way back (there the
+    // log likelihood behaves like y log v), so an overshoot from a long branch was never recovered
+    // and the branch stayed where it started on every pass; and where the objective is not locally
+    // concave, a small fixed gradient step left a branch near zero stuck there.
     double* clsUp = condLikes[p->getIndex()]->beginUp();
     double* clsDn = condLikes[p->getIndex()]->beginDn();
 
     TransitionMatrix& tMat = tiProbs[p->getIndex()];
     TransitionMatrix& fMat = firstDerivative;
     TransitionMatrix& sMat = secondDerivative;
- 
-    double lnL = 0.0;
-	int numIterations = 0;
-	bool converged = false;
-    double v = p->getBrlen();
-    double bestBrlen=0.0, bestLnL=0.0;
-	while (!converged)
-		{
-        tMat.setBrlen(v);
-        fMat.setBrlen(v);
-        sMat.setBrlen(v);
-        double oldV = v;
-        
-        double firstDerivative = 0.0;
-        double secondDerivative = 0.0;
-        lnL = calculateLFS(clsUp, clsDn, tMat, fMat, sMat, firstDerivative, secondDerivative);
-            
-        if (numIterations == 0)
+
+    // objective at length x, with its first and second derivatives with respect to theta; the log
+    // likelihood itself is left in lnL
+    auto evaluate = [&](double x, double& lnL, double& grad, double& hess) {
+        tMat.setBrlen(x);
+        fMat.setBrlen(x);
+        sMat.setBrlen(x);
+        double d1 = 0.0, d2 = 0.0;
+        lnL = calculateLFS(clsUp, clsDn, tMat, fMat, sMat, d1, d2);       // d1 = d ell/dv, d2 = d^2 ell/dv^2
+        double f = lnL;
+        grad = d1 * x;
+        hess = d2 * x * x + d1 * x;
+        if (lambda > 0.0)
             {
-            bestLnL = lnL;
-            bestBrlen = v;
+            f    += std::log(x) - lambda * x;
+            grad += 1.0 - lambda * x;
+            hess -= lambda * x;
             }
-        else 
-            {
-            if (lnL > bestLnL)
-                {
-                bestLnL = lnL;
-                bestBrlen = v;
-                }
-            }
-                 
-        // propose a step using Newton when possible
+        return f;
+    };
+
+    double v = std::min(std::max(p->getBrlen(), minBrlen), maxBrlen);
+    double lnL = 0.0, grad = 0.0, hess = 0.0;
+    double f = evaluate(v, lnL, grad, hess);
+
+    for (int iter=0; iter<50; iter++)
+        {
+        // converged, or pressed against a bound by the gradient
+        if (std::abs(grad) < 1.0e-8)
+            break;
+        if ((v <= minBrlen && grad < 0.0) || (v >= maxBrlen && grad > 0.0))
+            break;
+
         double step = 0.0;
-        if (std::abs(secondDerivative) >= 1e-12 && secondDerivative < 0.0)
-            step = - firstDerivative / secondDerivative;
+        if (hess < -1.0e-12)
+            {
+            step = -grad / hess;                    // Newton
+            if (0.5 * grad * step < 1.0e-12)        // predicted gain below roundoff
+                break;
+            }
         else
-            step = 0.01 * firstDerivative; // fallback small gradient step
-            
-        v = oldV + step;
-        if (v < minBrlen)
-            v = minBrlen;
-        if (v > maxBrlen)
-            v = maxBrlen;
-        
-        // objective-based convergence checks
-        double dv = std::abs(v - oldV);
-        if (dv < 1e-10)
-            converged = true;
-        if (std::abs(firstDerivative) < 1e-4)
-            converged = true;
-        if (numIterations >= 10)
-            converged = true;
-       
-		numIterations++;
-		}
-  
-    p->setBrlen(bestBrlen);
-    tMat.setBrlen(bestBrlen);
-    
+            step = (grad > 0.0) ? 1.0 : -1.0;       // not locally concave: move by a factor of e uphill
+        if (step >  2.0)
+            step =  2.0;
+        if (step < -2.0)
+            step = -2.0;
+
+        // backtrack until the objective increases
+        bool improved = false;
+        for (int halving=0; halving<40; halving++)
+            {
+            double vNew = std::min(std::max(v * std::exp(step), minBrlen), maxBrlen);
+            if (vNew == v)
+                break;
+            double newLnL = 0.0, newGrad = 0.0, newHess = 0.0;
+            double newF = evaluate(vNew, newLnL, newGrad, newHess);
+            if (newF > f)
+                {
+                v = vNew;
+                f = newF;
+                lnL = newLnL;
+                grad = newGrad;
+                hess = newHess;
+                improved = true;
+                break;
+                }
+            step *= 0.5;
+            }
+        if (improved == false)
+            break;
+        }
+
+    // a rejected trial may have left the transition matrix at another length
+    p->setBrlen(v);
+    tMat.setBrlen(v);
+
     return lnL;
 }
 
@@ -155,17 +186,21 @@ double LikelihoodCalculator::lnLikelihood(void) {
     if (tree == nullptr)
         return 0.0;
 
-    double bestLnL = 0.0;
     const std::vector<Node*>& postOrder = tree->getDownPassSequence();
-    
+
     tree->markUpClsAsDirty();
     tree->markDnClsAsDirty();
     tree->setAllFlags(false);
-    for (size_t rep=0; rep<10; rep++)
+
+    // Coordinate ascent: each pass optimizes every branch in turn. iterateBranch never decreases the
+    // likelihood, and the value it returns is that of the whole tree at the current branch lengths,
+    // so the value after the last branch of a pass is the tree's log likelihood after that pass.
+    double bestLnL = -std::numeric_limits<double>::infinity();
+    for (size_t rep=0; rep<200; rep++)
         {
         // pass up the tree, optimizing the branch for each node
         double lnL = 0.0;
-        for (std::vector<Node*>::const_reverse_iterator p = postOrder.rbegin(); p != postOrder.rend(); ++p) 
+        for (std::vector<Node*>::const_reverse_iterator p = postOrder.rbegin(); p != postOrder.rend(); ++p)
             {
             if (*p != treeRoot)
                 {
@@ -178,18 +213,11 @@ double LikelihoodCalculator::lnLikelihood(void) {
                 markDnClsAsDirtyFromNode(*p);
                 }
             }
-            
-        if (rep == 0)
-            {
-            bestLnL = lnL;
-            }
-        else 
-            {
-            if (std::abs(lnL - bestLnL) < 1.0e-6)
-                break;
-            }
-        if (bestLnL < lnL)
-            bestLnL = lnL;
+
+        double gain = lnL - bestLnL;
+        bestLnL = lnL;
+        if (gain < 1.0e-8)
+            break;
         }
 
     // Optionally integrate the branch lengths out under the prior. This is a side calculation that
@@ -203,52 +231,6 @@ double LikelihoodCalculator::lnLikelihood(void) {
         }
 
     return bestLnL;
-}
-
-double LikelihoodCalculator::mapRefineBranchStep(Node* p, double lambda) {
-
-    // One Newton step, in theta = log(v), toward the mode of the log posterior for this branch,
-    //   h(theta) = ell(v) + log lambda - lambda v + theta,     v = e^theta,
-    // the last term being the Jacobian of the log transform. Working in theta sends the v -> 0
-    // boundary to -infinity, so branches the prior pushes toward zero stay in the interior.
-    double v = p->getBrlen();
-    if (v < minBrlen)
-        v = minBrlen;
-
-    double* clsUp = condLikes[p->getIndex()]->beginUp();
-    double* clsDn = condLikes[p->getIndex()]->beginDn();
-    TransitionMatrix& tMat = tiProbs[p->getIndex()];
-    TransitionMatrix& fMat = firstDerivative;
-    TransitionMatrix& sMat = secondDerivative;
-    tMat.setBrlen(v);
-    fMat.setBrlen(v);
-    sMat.setBrlen(v);
-
-    double d1 = 0.0, d2 = 0.0;
-    (void)calculateLFS(clsUp, clsDn, tMat, fMat, sMat, d1, d2);   // d1 = d ell/dv, d2 = d^2 ell/dv^2
-
-    double grad = d1 * v - lambda * v + 1.0;          // dh/dtheta
-    double hess = d2 * v * v + (d1 - lambda) * v;     // d^2 h/dtheta^2  (negative near the mode)
-
-    double step = 0.0;
-    if (hess < -1.0e-12)
-        step = -grad / hess;                          // Newton
-    else
-        step = 0.01 * grad;                           // gradient fallback when not locally concave
-    if (step >  2.0)
-        step =  2.0;
-    if (step < -2.0)
-        step = -2.0;
-
-    double vNew = std::exp(std::log(v) + step);
-    if (vNew < minBrlen)
-        vNew = minBrlen;
-    if (vNew > maxBrlen)
-        vNew = maxBrlen;
-
-    p->setBrlen(vNew);
-    tMat.setBrlen(vNew);
-    return std::abs(vNew - v);
 }
 
 // Cholesky factor of a symmetric positive-definite n x n matrix (row-major), returning the log
@@ -305,6 +287,11 @@ void LikelihoodCalculator::refreshAllConditionalLikelihoods(const std::vector<No
 void LikelihoodCalculator::computeThetaGradient(const std::vector<Node*>& order, double lambda, std::vector<double>& G) {
 
     // theta-gradient of the log posterior g: G_e = ell'_e b_e - lambda b_e + 1, at the current branches.
+    // The transition matrices must match the branch lengths before the conditional likelihoods are
+    // rebuilt: the finite-difference Hessian moves a branch by setting the node's length alone, and
+    // without this the gradient was computed from conditionals built with the previous perturbation.
+    for (Node* nde : order)
+        tiProbs[nde->getIndex()].setBrlen(nde->getBrlen());
     refreshAllConditionalLikelihoods(order);
     G.assign(order.size(), 0.0);
     for (size_t k=0; k<order.size(); ++k)
@@ -403,24 +390,31 @@ double LikelihoodCalculator::lnMarginalLikelihood(void) {
     for (Node* p : order)
         savedBrlen[p->getIndex()] = p->getBrlen();
 
-    // 1. Refine the ML branch lengths to the joint MAP under the prior (coordinate Newton in theta).
+    // 1. Refine the ML branch lengths to the joint MAP under the prior (coordinate ascent in theta;
+    //    each branch is maximized in turn, and the log posterior never decreases).
     tree->markUpClsAsDirty();
     tree->markDnClsAsDirty();
     tree->setAllFlags(false);
-    for (size_t rep=0; rep<10; ++rep)
+    double bestH = -std::numeric_limits<double>::infinity();
+    for (size_t rep=0; rep<200; ++rep)
         {
-        double maxStep = 0.0;
+        double lnL = 0.0;
         for (std::vector<Node*>::const_reverse_iterator p = order.rbegin(); p != order.rend(); ++p)
             {
             updateUpConditionalLikelihoods(*p);
             updateDnConditionalLikelihoods(*p);
-            double s = mapRefineBranchStep(*p, lambda);
-            if (s > maxStep)
-                maxStep = s;
+            lnL = iterateBranch(*p, lambda);
             markUpClsAsDirtyFromNode(*p);
             markDnClsAsDirtyFromNode(*p);
             }
-        if (maxStep < 1.0e-8)
+
+        // the log posterior in theta after this pass (up to a constant), for the convergence check
+        double h = lnL;
+        for (Node* nde : order)
+            h += std::log(nde->getBrlen()) - lambda * nde->getBrlen();
+        double gain = h - bestH;
+        bestH = h;
+        if (gain < 1.0e-8)
             break;
         }
 
