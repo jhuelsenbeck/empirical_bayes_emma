@@ -3042,7 +3042,7 @@ double MarkovChainAnalyzer::kemenyConstantStochastic(int numProbes, int lanczosS
     // quadrature read off an m-step Lanczos tridiagonalization of M.
     //
     // The probes are run as blocks, so that each pass over the kernel serves every probe in the block;
-    // the product is bandwidth-bound, and a block of eight costs little more than a single probe. Each
+    // the product is bandwidth-bound, and a block of probes costs little more than a single one. Each
     // Lanczos step is reorthogonalized against the deflated directions and its two predecessors only.
     // Full reorthogonalization would hold m vectors per probe -- gigabytes per block at ten taxa -- and
     // Gauss quadrature from Lanczos without it remains accurate (lost orthogonality duplicates converged
@@ -3118,7 +3118,10 @@ double MarkovChainAnalyzer::kemenyConstantStochastic(int numProbes, int lanczosS
 
     // ---- The stochastic part: block SLQ on the complement ----
     int m = std::max(2, std::min(lanczosSteps, static_cast<int>(N) - 1));
-    const int blockSize = 8;
+    // All 32 probes go in one block: with blocks of eight the kernel was read four times as often, for
+    // little saving, since a wider block costs barely more per pass. The signs are drawn in the same
+    // sequence either way. Each of the five n x 32 work blocks is 0.5 GB at ten taxa.
+    const int blockSize = 32;
     std::mt19937_64 gen(seed);
     std::uniform_int_distribution<int> coin(0, 1);
 
