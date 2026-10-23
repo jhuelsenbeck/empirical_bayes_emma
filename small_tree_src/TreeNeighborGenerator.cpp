@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <exception>
+#include <functional>
 #include <iostream>
 #include <set>
 #include "CompactTree.hpp"
@@ -182,6 +184,123 @@ void TreeNeighborGeneratorNNI2::generateNeighbors(uint64_t treeHash, std::vector
         }
 }
 
+namespace {
+
+    // The rows of the trees [first, last), appended to entries in tree order, with their lengths.
+    class NeighborRowTask : public ThreadTask {
+
+        public:
+                                NeighborRowTask(const RowGenerator* g, TreeCache* tc, uint32_t lo, uint32_t hi) :
+                                    rowOf(g), treeCache(tc), first(lo), last(hi) { }
+            void                run(void) override
+                                    {
+                                    entries.clear();
+                                    counts.clear();
+                                    std::vector<TreeInfo*> scratch;
+                                    try
+                                        {
+                                        for (uint32_t i = first; i < last; i++)
+                                            {
+                                            size_t before = entries.size();
+                                            (*rowOf)(treeCache->treeAt(i), scratch, entries);
+                                            counts.push_back(static_cast<uint32_t>(entries.size() - before));
+                                            }
+                                        }
+                                    catch (...)
+                                        {
+                                        failure = std::current_exception();
+                                        }
+                                    }
+            std::exception_ptr  failure;                           // rethrown on the calling thread
+            const RowGenerator* rowOf;
+            TreeCache*          treeCache;
+            uint32_t            first;
+            uint32_t            last;
+            std::vector<uint32_t> entries;
+            std::vector<uint32_t> counts;
+    };
+}
+
+// Fill every neighbor row of the cache. Each row depends only on its tree and the shared table, which is
+// only read, so trees are handed out in blocks; each batch of blocks is generated in parallel, then
+// appended to the cache's neighbor array in tree order, so only one batch of rows is held twice at a time.
+void fillNeighborRows(TreeCache* treeCache, ThreadPool* pool, const RowGenerator& rowOf) {
+
+    uint32_t numTrees = static_cast<uint32_t>(treeCache->size());
+    const uint32_t blockSize = 1024;
+    int numThreads = (pool != nullptr) ? pool->getThreadCount() : 1;
+    uint32_t blocksPerBatch = static_cast<uint32_t>(std::max(1, numThreads * 4));
+
+    std::vector<NeighborRowTask> tasks;
+    for (uint32_t start = 0; start < numTrees; start += blockSize * blocksPerBatch)
+        {
+        tasks.clear();
+        for (uint32_t lo = start; lo < numTrees && lo < start + blockSize * blocksPerBatch; lo += blockSize)
+            tasks.emplace_back(&rowOf, treeCache, lo, std::min(numTrees, lo + blockSize));
+        if (pool != nullptr)
+            {
+            for (NeighborRowTask& task : tasks)
+                pool->pushTask(&task);
+            pool->wait();
+            }
+        else
+            {
+            for (NeighborRowTask& task : tasks)
+                task.run();
+            }
+        for (NeighborRowTask& task : tasks)
+            if (task.failure)
+                std::rethrow_exception(task.failure);        // the pool's workers would swallow it
+        for (NeighborRowTask& task : tasks)
+            {
+            const uint32_t* row = task.entries.data();
+            for (uint32_t k = 0; k < task.counts.size(); k++)
+                {
+                treeCache->setNeighbors(treeCache->treeAt(task.first + k), row, task.counts[k]);
+                row += task.counts[k];
+                }
+            }
+        }
+    treeCache->finishNeighbors();
+}
+
+// The NNI2 row of one tree, as generateNeighbors forms it -- its NNI neighbors and theirs, less the tree
+// itself, each once, in the order of a std::set of TreeInfo pointers -- written as indices into the
+// shared table. The NNI2 cache is a view of the NNI cache's table, so a neighbor's record and index are
+// those of the NNI cache.
+void TreeNeighborGeneratorNNI2::generateRow(const TreeInfo* info, std::vector<TreeInfo*>& scratch, std::vector<uint32_t>& out) const {
+
+    NeighborList degreeOneNeighbors = nniTreeCache->neighbors(info);
+    if (degreeOneNeighbors.size() == 0)
+        Msg::error("No neighbors found in TreeNeighborGeneratorNNI2");
+
+    scratch.clear();
+    for (TreeInfo* nbr1 : degreeOneNeighbors)
+        {
+        scratch.push_back(nbr1);
+        for (TreeInfo* nbr2 : nniTreeCache->neighbors(nbr1))
+            if (nbr2 != info)
+                scratch.push_back(nbr2);
+        }
+    std::sort(scratch.begin(), scratch.end(), std::less<TreeInfo*>());
+    scratch.erase(std::unique(scratch.begin(), scratch.end()), scratch.end());
+    for (TreeInfo* nbr : scratch)
+        out.push_back(nbr->index);
+}
+
+// Every NNI2 row, generated in parallel from the NNI rows. Generating them one tree at a time through
+// TreeNeighbors rebuilt each tree from its compact encoding only to read its hash, and collected the
+// neighbors in a std::set: some 40 s on one core at ten taxa. The rows are the same.
+void TreeNeighborGeneratorNNI2::generateAll(ThreadPool* pool) {
+
+    int numThreads = (pool != nullptr) ? pool->getThreadCount() : 1;
+    std::cout << "   Generating NNI2 neighbors for all " << treeCache->size() << " trees from the NNI neighborhoods (" << numThreads << " threads)" << std::endl;
+    fillNeighborRows(treeCache, pool, [this](const TreeInfo* info, std::vector<TreeInfo*>& scratch, std::vector<uint32_t>& out)
+        {
+        generateRow(info, scratch, out);
+        });
+}
+
 TreeNeighborGeneratorTBR::TreeNeighborGeneratorTBR(TreeCache* tc) : TreeNeighborGenerator(tc) {
 
 }
@@ -334,31 +453,6 @@ namespace {
 
     inline int popCount(uint32_t x) { return __builtin_popcount(x); }
 
-    class TbrSplitTask : public ThreadTask {
-
-        public:
-                                TbrSplitTask(const TbrSplitNeighbors* g, TreeCache* tc, uint32_t lo, uint32_t hi) :
-                                    generator(g), treeCache(tc), first(lo), last(hi) { }
-            void                run(void) override
-                                    {
-                                    entries.clear();
-                                    counts.clear();
-                                    std::vector<uint32_t> row;
-                                    for (uint32_t i = first; i < last; i++)
-                                        {
-                                        row.clear();
-                                        generator->generate(treeCache->treeAt(i), row);
-                                        counts.push_back(static_cast<uint32_t>(row.size()));
-                                        entries.insert(entries.end(), row.begin(), row.end());
-                                        }
-                                    }
-            const TbrSplitNeighbors* generator;
-            TreeCache*          treeCache;
-            uint32_t            first;
-            uint32_t            last;
-            std::vector<uint32_t> entries;
-            std::vector<uint32_t> counts;
-    };
 }
 
 TbrSplitNeighbors::TbrSplitNeighbors(TreeCache* tc, int nt) : treeCache(tc), numTaxa(nt) {
@@ -535,40 +629,76 @@ void TbrSplitNeighbors::generate(const TreeInfo* info, std::vector<uint32_t>& ou
 
 void TbrSplitNeighbors::generateAll(ThreadPool* pool) {
 
-    // Trees are handed out in blocks; each batch of blocks is generated in parallel, then appended to
-    // the cache's neighbor array in tree order, so only one batch of rows is held twice at a time.
-    uint32_t numTrees = static_cast<uint32_t>(treeCache->size());
-    const uint32_t blockSize = 1024;
     int numThreads = (pool != nullptr) ? pool->getThreadCount() : 1;
-    uint32_t blocksPerBatch = static_cast<uint32_t>(std::max(1, numThreads * 4));
-
-    std::cout << "   Generating TBR neighbors for all " << numTrees << " trees from split masks (" << numThreads << " threads)" << std::endl;
-    std::vector<TbrSplitTask> tasks;
-    for (uint32_t start = 0; start < numTrees; start += blockSize * blocksPerBatch)
+    std::cout << "   Generating TBR neighbors for all " << treeCache->size() << " trees from split masks (" << numThreads << " threads)" << std::endl;
+    fillNeighborRows(treeCache, pool, [this](const TreeInfo* info, std::vector<TreeInfo*>&, std::vector<uint32_t>& out)
         {
-        tasks.clear();
-        for (uint32_t lo = start; lo < numTrees && lo < start + blockSize * blocksPerBatch; lo += blockSize)
-            tasks.emplace_back(this, treeCache, lo, std::min(numTrees, lo + blockSize));
-        if (pool != nullptr)
+        generate(info, out);
+        });
+}
+
+// NNI neighborhoods from split masks. An NNI move across the edge above an interior node p (other than
+// the root's child, whose edge leads to tip 0) exchanges one of p's children with p's sibling S, so it
+// replaces the cluster of p, c0 | c1, by S | c1 or by S | c0 and leaves every other cluster as it was.
+// The two neighbors of each such edge are those TreeNeighborGeneratorNNI builds, in a different order;
+// nothing reads an NNI row before it is sorted (TreeSpace sorts its rows by tree index, the analyses by
+// likelihood), so the order does not matter.
+NniSplitNeighbors::NniSplitNeighbors(TreeCache* tc, int nt) : treeCache(tc), numTaxa(nt) {
+
+    if (numTaxa < 4 || numTaxa > 16)
+        Msg::error("The split-mask NNI generator handles 4 to 16 taxa");
+}
+
+void NniSplitNeighbors::generate(const TreeInfo* info, std::vector<uint32_t>& out) const {
+
+    MaskTree t;
+    size_t pos = 0;
+    int taxonBits = CompactTree::bitsPerIndex(numTaxa);
+    t.rootChild = parseCompact(info->compactTree, pos, taxonBits, t, -1);
+    if (info->compactTree->readCode(pos) != CompactTree::Code::Tip || info->compactTree->readIndex(pos, taxonBits) != 0)
+        Msg::error("Expecting tip 0 as the root of a compact tree");
+
+    // the clusters of the tree: every interior node but the root's child
+    int clusterOf[32];
+    uint32_t base[32], clusters[32];
+    int nc = 0;
+    for (int q = 0; q < t.numNodes; q++)
+        {
+        clusterOf[q] = -1;
+        if (q != t.rootChild && t.child0[q] >= 0)
             {
-            for (TbrSplitTask& task : tasks)
-                pool->pushTask(&task);
-            pool->wait();
-            }
-        else
-            {
-            for (TbrSplitTask& task : tasks)
-                task.run();
-            }
-        for (TbrSplitTask& task : tasks)
-            {
-            const uint32_t* row = task.entries.data();
-            for (uint32_t k = 0; k < task.counts.size(); k++)
-                {
-                treeCache->setNeighbors(treeCache->treeAt(task.first + k), row, task.counts[k]);
-                row += task.counts[k];
-                }
+            clusterOf[q] = nc;
+            base[nc++] = t.mask[q];
             }
         }
-    treeCache->finishNeighbors();
+
+    for (int p = 0; p < t.numNodes; p++)
+        {
+        if (clusterOf[p] < 0)
+            continue;
+        int u = t.parent[p];
+        int S = (t.child0[u] == p) ? t.child1[u] : t.child0[u];
+        const uint32_t swapped[2] = { t.mask[S] | t.mask[t.child1[p]], t.mask[S] | t.mask[t.child0[p]] };
+        for (uint32_t m : swapped)
+            {
+            for (int k = 0; k < nc; k++)
+                clusters[k] = base[k];
+            clusters[clusterOf[p]] = m;
+            uint64_t h = TbrSplitNeighbors::hashOfClusters(clusters, nc, numTaxa);
+            TreeInfo* nbr = treeCache->getTreeInfo(h);
+            if (nbr == nullptr)
+                Msg::error("An NNI neighbor formed from split masks is not in the tree cache");
+            out.push_back(nbr->index);
+            }
+        }
+}
+
+void NniSplitNeighbors::generateAll(ThreadPool* pool) {
+
+    int numThreads = (pool != nullptr) ? pool->getThreadCount() : 1;
+    std::cout << "   Generating NNI neighbors for all " << treeCache->size() << " trees from split masks (" << numThreads << " threads)" << std::endl;
+    fillNeighborRows(treeCache, pool, [this](const TreeInfo* info, std::vector<TreeInfo*>&, std::vector<uint32_t>& out)
+        {
+        generate(info, out);
+        });
 }

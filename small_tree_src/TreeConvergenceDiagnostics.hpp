@@ -15,9 +15,27 @@ class TreeConvergenceDiagnostics {
         explicit        TreeConvergenceDiagnostics(TreeCache* tc);
 
         static void     writeStatsHeader(std::ostream& os, size_t numReplicates = 0);
-        void            writeStatsLine(std::ostream& os, const std::vector<TreeSamples*>& sampleVec) const;
+        void            writeStatsLine(std::ostream& os, const std::vector<TreeSamples*>& sampleVec);
 
     private:
+                        // Per-chain running totals, advanced over the samples drawn since the previous
+                        // call. Earlier versions recomputed every statistic from the start of each trace
+                        // at each of the ~60 points a run is logged, and re-sorted the whole tree space
+                        // each time as well; the object now lives for the whole run.
+        struct ChainCursor {
+            size_t                          processed = 0;
+            std::vector<unsigned char>      visited;          // by TreeInfo::index: seen yet?
+            double                          discoveredMass = 0.0;
+            double                          credible95MassDiscovered = 0.0;
+            bool                            tau95WasReached = false;
+            double                          tau95 = 0.0;
+            double                          sumP = 0.0;
+            int                             mapFirstHitCycle = -1;
+            uint64_t                        lastHash = 0;
+            const TreeInfo*                 lastInfo = nullptr;
+        };
+        std::vector<ChainCursor>            cursors;
+        void            advance(ChainCursor& cur, const TreeSamples* samples);
         struct ChainStats {
             size_t      numSamples = 0;
 

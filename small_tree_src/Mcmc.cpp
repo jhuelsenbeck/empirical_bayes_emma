@@ -51,8 +51,8 @@ static void sampleDistinctIndices(RandomVariable* rng, int k, int degree, int ex
 
 
 
-Mcmc::Mcmc(RandomVariable* r, TreeCache* tc, Alignment* a, bool tf, std::string cfn) :
-    rng(r), alignment(a), treeCache(tc), expandedOutput(tf), convergenceLogFileName(cfn) {
+Mcmc::Mcmc(RandomVariable* r, TreeCache* tc, Alignment* a, bool tf, std::string cfn, ThreadPool* tp) :
+    rng(r), threadPool(tp), alignment(a), treeCache(tc), expandedOutput(tf), convergenceLogFileName(cfn) {
 
     UserSettings& settings = UserSettings::userSettings();
     temperature     = settings.getTemperature();
@@ -68,12 +68,12 @@ Mcmc::~Mcmc(void) {
         delete allocatedCalculators[i];
 }
 
-std::pair<int,int> Mcmc::chooseChains(int numChains) {
+std::pair<int,int> Mcmc::chooseChains(RandomVariable* r, int numChains) {
 
-    int idx1 = (int)(rng->uniformRv()*numChains);
+    int idx1 = (int)(r->uniformRv()*numChains);
     int idx2 = idx1;
     while (idx1 == idx2)
-        idx2 = (int)(rng->uniformRv()*numChains);
+        idx2 = (int)(r->uniformRv()*numChains);
     return std::make_pair(idx1,idx2);
 }
 
@@ -94,21 +94,20 @@ TreeInfo* Mcmc::chooseInitialTreeInfo(void) {
     return it->second;
 }
 
-uint64_t Mcmc::chooseGibbs(std::vector<std::pair<uint64_t,double>>& probs) {
+// Draw a tree from the exact posterior. cdf holds the running sums of probs, formed in the same order
+// and by the same additions as the linear scan this replaces, so the first entry whose cumulative
+// probability exceeds u -- found by binary search rather than by walking the list -- is the tree that
+// scan returned.
+uint64_t Mcmc::chooseGibbs(RandomVariable* r, std::vector<std::pair<uint64_t,double>>& probs, const std::vector<double>& cdf) {
 
-    double u = rng->uniformRv();
-    double sum = 0.0;
-    for (size_t i=0, n=probs.size(); i<n; i++)
-        {
-        sum += probs[i].second;
-        if (u < sum)
-            return probs[i].first;
-        }
-    Msg::error("Failed to choose a Gibbs tree");
-    return 0;
+    double u = r->uniformRv();
+    std::vector<double>::const_iterator it = std::upper_bound(cdf.begin(), cdf.end(), u);
+    if (it == cdf.end())
+        Msg::error("Failed to choose a Gibbs tree");
+    return probs[static_cast<size_t>(it - cdf.begin())].first;
 }
 
-TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbability) {
+TreeInfo* Mcmc::chooseTreeInfo(RandomVariable* r, TreeInfo* currentInfo, double& proposalProbability) {
 
     if (currentInfo == nullptr)
         Msg::error("Current tree is null in Mcmc::chooseTreeInfo");
@@ -122,7 +121,7 @@ TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbabilit
 
     // The proposal probabilities are formed as the scan reaches them. The neighbors are sorted by
     // likelihood, so for any positive power the scan usually stops within the first few.
-    double u = rng->uniformRv();
+    double u = r->uniformRv();
     double sum = 0.0;
     for (uint32_t i=0; i<neighbors.size(); i++)
         {
@@ -141,13 +140,13 @@ TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbabilit
     return neighbors.back();
 }
 
-TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbability, int n, double power) {
+TreeInfo* Mcmc::chooseTreeInfo(RandomVariable* r, std::vector<int>& subset, TreeInfo* currentInfo, double& proposalProbability, int n, double power) {
 
     if (currentInfo == nullptr)
         Msg::error("Current tree is null in Mcmc::chooseTreeInfo");
         
     if (n == 0)
-        return chooseTreeInfo(currentInfo, proposalProbability);
+        return chooseTreeInfo(r, currentInfo, proposalProbability);
 
     NeighborList neighbors = treeCache->neighbors(currentInfo);
 
@@ -166,14 +165,14 @@ TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbabilit
     double refLnL = currentInfo->lnLikelihood;
 
     // draw n distinct trials uniformly, without replacement, from the neighborhood
-    subsetIndices.clear();
-    sampleDistinctIndices(rng, n, (int)neighbors.size(), -1, subsetIndices);
+    subset.clear();
+    sampleDistinctIndices(r, n, (int)neighbors.size(), -1, subset);
 
-    std::vector<double> weights(subsetIndices.size());
+    std::vector<double> weights(subset.size());
     double totalWeight = 0.0;
-    for (size_t i=0; i<subsetIndices.size(); i++)
+    for (size_t i=0; i<subset.size(); i++)
         {
-        TreeInfo* nbr = neighbors[subsetIndices[i]];
+        TreeInfo* nbr = neighbors[subset[i]];
         uint32_t nbrDegree = treeCache->neighbors(nbr).size();
         if (nbrDegree == 0)
             Msg::error("Neighbor has no neighbors; cannot form multiple-try weight");
@@ -182,10 +181,10 @@ TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbabilit
         totalWeight += w;
         }
 
-    double u = rng->uniformRv() * totalWeight;
+    double u = r->uniformRv() * totalWeight;
     double sum = 0.0;
-    size_t pick = subsetIndices.size() - 1;
-    for (size_t i=0; i<subsetIndices.size(); i++)
+    size_t pick = subset.size() - 1;
+    for (size_t i=0; i<subset.size(); i++)
         {
         sum += weights[i];
         if (u < sum)
@@ -197,19 +196,23 @@ TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbabilit
 
     // return the forward multiple-try weight sum (not a single selection prob)
     proposalProbability = totalWeight;
-    return neighbors[subsetIndices[pick]];
+    return neighbors[subset[pick]];
 }
 
-double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash) {
+double Mcmc::findTreeProbability(TreeInfo* fromInfo, const TreeInfo* toInfo) {
 
     if (fromInfo == nullptr)
         Msg::error("Null source tree in Mcmc::findTreeProbability");
 
+    // The destination is found by its index in the shared table, read straight from the row, rather
+    // than by comparing the hash of every neighbor: for TBR that was some 360 scattered reads of
+    // TreeInfo records per step. The first match is the same either way.
     NeighborList neighbors = treeCache->neighbors(fromInfo);
+    const uint32_t toIndex = toInfo->index;
 
     for (uint32_t i=0; i<neighbors.size(); i++)
         {
-        if (neighbors[i]->hash == toHash)
+        if (neighbors.indexAt(i) == toIndex)
             return treeCache->neighborProposalProbability(fromInfo, neighbors[i]);
         }
 
@@ -218,13 +221,13 @@ double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash) {
     return 0.0;
 }
 
-double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash, int n, double power) {
+double Mcmc::findTreeProbability(RandomVariable* r, std::vector<int>& subset, TreeInfo* fromInfo, const TreeInfo* toInfo, int n, double power) {
 
     if (fromInfo == nullptr)
         Msg::error("Null source tree in Mcmc::findTreeProbability");
         
     if (n == 0)
-        return findTreeProbability(fromInfo, toHash);
+        return findTreeProbability(fromInfo, toInfo);
 
     NeighborList neighbors = treeCache->neighbors(fromInfo);
 
@@ -233,9 +236,10 @@ double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash, int n, dou
 
     // locate the destination x among Y's neighbors; it is forced in as x_k* = x
     int toIdx = -1;
+    const uint32_t toIndex = toInfo->index;
     for (uint32_t i=0; i<neighbors.size(); i++)
         {
-        if (neighbors[i]->hash == toHash)
+        if (neighbors.indexAt(i) == toIndex)
             {
             toIdx = (int)i;
             break;
@@ -249,12 +253,12 @@ double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash, int n, dou
 
     // reference set: the forced destination x, plus n-1 distinct draws from N(Y)\{x},
     // sampled uniformly without replacement so the m reference trees are all distinct
-    subsetIndices.clear();
-    subsetIndices.push_back(toIdx);
-    sampleDistinctIndices(rng, n - 1, (int)neighbors.size(), toIdx, subsetIndices);
+    subset.clear();
+    subset.push_back(toIdx);
+    sampleDistinctIndices(r, n - 1, (int)neighbors.size(), toIdx, subset);
 
     double totalWeight = 0.0;
-    for (const int& idx : subsetIndices)
+    for (const int& idx : subset)
         {
         TreeInfo* nbr = neighbors[idx];
         uint32_t nbrDegree = treeCache->neighbors(nbr).size();
@@ -326,6 +330,7 @@ void Mcmc::openConvergenceLog(size_t numReplicates) {
         }
 
     convergenceLog << std::fixed << std::setprecision(6);
+    diagnostics = std::make_unique<TreeConvergenceDiagnostics>(treeCache);
     convergenceLog << "cycle\t";
     TreeConvergenceDiagnostics::writeStatsHeader(convergenceLog, numReplicates);
     convergenceLog << '\n';
@@ -395,6 +400,76 @@ void Mcmc::returnCalculator(LikelihoodCalculator* calculator) {
     calculatorPool.push_back(calculator);
 }
 
+// One body(run) call per replicate, on the thread pool when there is one. The replicates share only
+// read-only state -- the tree records, neighbor rows and proposal normalizers -- and each owns its
+// generator, scratch and samples, so the results do not depend on how the calls are scheduled.
+namespace {
+
+class ReplicateTask : public ThreadTask {
+
+    public:
+                                ReplicateTask(const std::function<void(int)>* b, int i) : body(b), index(i) {}
+        void                    run(void) override { (*body)(index); }
+
+    private:
+        const std::function<void(int)>* body;
+        int                     index;
+};
+
+}
+
+void Mcmc::forEachRun(int numRuns, const std::function<void(int)>& body) {
+
+    if (threadPool == nullptr || numRuns < 2)
+        {
+        for (int run=0; run<numRuns; run++)
+            body(run);
+        return;
+        }
+
+    std::vector<ReplicateTask> tasks;
+    tasks.reserve(numRuns);
+    for (int run=0; run<numRuns; run++)
+        tasks.emplace_back(&body, run);
+    const size_t batch = 1024;                               // well inside the pool's queue
+    for (size_t first=0; first<tasks.size(); first+=batch)
+        {
+        for (size_t t=first; t<tasks.size() && t<first+batch; t++)
+            threadPool->pushTask(&tasks[t]);
+        threadPool->wait();
+        }
+}
+
+// Each replicate draws from a generator of its own, seeded from the master generator in replicate
+// order, so a run is reproducible from the program's seed whatever the number of threads.
+std::vector<RandomVariable> Mcmc::makeRunGenerators(int numRuns) {
+
+    std::vector<RandomVariable> gens;
+    gens.reserve(numRuns);
+    for (int run=0; run<numRuns; run++)
+        {
+        uint32_t seed = 0;
+        while (seed == 0)                                    // zero would mean "seed from the device"
+            seed = (uint32_t)(rng->uniformRv() * 4294967296.0);
+        gens.emplace_back(seed);
+        }
+    return gens;
+}
+
+// The last cycle of the segment that starts at `first`: the replicates advance independently up to
+// the next cycle at which the convergence log is written or the screen is updated, where they meet.
+uint32_t Mcmc::segmentEnd(uint32_t first) {
+
+    uint32_t n = first;
+    while (n < (uint32_t)numCycles)
+        {
+        if (shouldSample(n) == true || n % printFrequency == 0 || n == 1)
+            break;
+        n++;
+        }
+    return n;
+}
+
 void Mcmc::run(std::string label, double power, int nNeighbors) {
 
     std::cout << "   " << label << std::endl;
@@ -413,11 +488,11 @@ void Mcmc::run(std::string label, double power, int nNeighbors) {
     for (uint32_t n=1; n<=numCycles; n++)
         {
         double forwardProbability = 0.0;
-        TreeInfo* newInfo = chooseTreeInfo(currentInfo, forwardProbability, nNeighbors, power);
+        TreeInfo* newInfo = chooseTreeInfo(rng, subsetIndices, currentInfo, forwardProbability, nNeighbors, power);
         if (newInfo == nullptr)
             Msg::error("New tree is null");
 
-        double reverseProbability = findTreeProbability(newInfo, currentInfo->hash, nNeighbors, power);
+        double reverseProbability = findTreeProbability(rng, subsetIndices, newInfo, currentInfo, nNeighbors, power);
 
         double newLnL = newInfo->lnLikelihood;
         double lnR;
@@ -474,6 +549,13 @@ void Mcmc::run(std::string label, int numRuns) {
         {
             return a.second > b.second;   // descending order
         });
+    std::vector<double> gibbsCdf(orderedProbs.size());
+    double cumulative = 0.0;
+    for (size_t i=0; i<orderedProbs.size(); i++)
+        {
+        cumulative += orderedProbs[i].second;
+        gibbsCdf[i] = cumulative;
+        }
 
     deleteSamplesAndPartitions();
     samples.resize(numRuns);
@@ -489,33 +571,36 @@ void Mcmc::run(std::string label, int numRuns) {
     std::vector<double> curLnL(numRuns);
     for (int run=0; run<numRuns; run++)
         {
-        currentTree[run] = chooseGibbs(orderedProbs);
+        currentTree[run] = chooseGibbs(rng, orderedProbs, gibbsCdf);
         TreeInfo* tInfo = treeCache->getTreeInfo(currentTree[run]);
         curLnL[run] = tInfo->lnLikelihood;
         }
+    std::vector<RandomVariable> runRng = makeRunGenerators(numRuns);
 
-    for (uint32_t n=1; n<=numCycles; n++)
+    for (uint32_t first=1; first<=numCycles; )
         {
-        for (int run=0; run<numRuns; run++)
+        uint32_t last = segmentEnd(first);
+        forEachRun(numRuns, [&](int run)
             {
-            uint64_t newTree = chooseGibbs(orderedProbs);
-            currentTree[run] = newTree;
+            RandomVariable* r = &runRng[run];
+            for (uint32_t n=first; n<=last; n++)
+                {
+                uint64_t newTree = chooseGibbs(r, orderedProbs, gibbsCdf);
+                currentTree[run] = newTree;
+                samples[run]->sampleTree(newTree);
+                }
+            curLnL[run] = treeCache->getTreeInfo(currentTree[run])->lnLikelihood;
+            });
 
-            TreeInfo* tInfo = treeCache->getTreeInfo(newTree);
-            curLnL[run] = tInfo->lnLikelihood;
-
-            samples[run]->sampleTree(currentTree[run]);
-            }
-
-        if (shouldSample(n) == true)
-            writeConvergenceLine(n);
-
-        printToScreen(n, curLnL);
+        if (shouldSample(last) == true)
+            writeConvergenceLine(last);
+        printToScreen(last, curLnL);
+        first = last + 1;
         }
     std::cout << std::endl;
 
     TreeSamples::combinedPrint(samples);
-    TreeSamples::compareSamples(samples);
+    TreeSamples::compareSamples(samples, threadPool);
 
     std::cout << std::endl;
 }
@@ -552,49 +637,63 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns) {
         currentInfo[run] = chooseInitialTreeInfo();
         curLnL[run] = currentInfo[run]->lnLikelihood;
         }
+    std::vector<RandomVariable> runRng = makeRunGenerators(numRuns);
+    std::vector<std::vector<int>> runSubset(numRuns);
 
-    for (uint32_t n=1; n<=numCycles; n++)
+    for (uint32_t first=1; first<=numCycles; )
         {
-        for (int run=0; run<numRuns; run++)
+        uint32_t last = segmentEnd(first);
+        forEachRun(numRuns, [&](int run)
             {
-            double forwardProbability = 0.0;
-            TreeInfo* newInfo = chooseTreeInfo(currentInfo[run], forwardProbability, nNeighbors, power);
-            if (newInfo == nullptr)
-                Msg::error("New tree is null");
-
-            double reverseProbability = findTreeProbability(newInfo, currentInfo[run]->hash, nNeighbors, power);
-
-            double newLnL = newInfo->lnLikelihood;
-            double lnR;
-            if (nNeighbors == 0)
+            // the chain's state lives in locals for the segment, so threads do not share cache lines
+            RandomVariable* r = &runRng[run];
+            std::vector<int>& subset = runSubset[run];
+            TreeInfo* cur = currentInfo[run];
+            double lnL = curLnL[run];
+            TreeSamples* s = samples[run];
+            for (uint32_t n=first; n<=last; n++)
                 {
-                double lnLikelihoodRatio = newLnL - curLnL[run];
-                double lnProposalRatio = std::log(reverseProbability) - std::log(forwardProbability);
-                lnR = lnLikelihoodRatio + lnProposalRatio;
+                double forwardProbability = 0.0;
+                TreeInfo* newInfo = chooseTreeInfo(r, subset, cur, forwardProbability, nNeighbors, power);
+                if (newInfo == nullptr)
+                    Msg::error("New tree is null");
+
+                double reverseProbability = findTreeProbability(r, subset, newInfo, cur, nNeighbors, power);
+
+                double newLnL = newInfo->lnLikelihood;
+                double lnR;
+                if (nNeighbors == 0)
+                    {
+                    double lnLikelihoodRatio = newLnL - lnL;
+                    double lnProposalRatio = std::log(reverseProbability) - std::log(forwardProbability);
+                    lnR = lnLikelihoodRatio + lnProposalRatio;
+                    }
+                else
+                    {
+                    lnR = (power - 1.0) * (lnL - newLnL) + std::log(forwardProbability) - std::log(reverseProbability);
+                    }
+
+                if (std::log(r->uniformRv()) < lnR)
+                    {
+                    cur = newInfo;
+                    lnL = newLnL;
+                    }
+
+                s->sampleTree(cur->hash);
                 }
-            else
-                {
-                lnR = (power - 1.0) * (curLnL[run] - newLnL) + std::log(forwardProbability) - std::log(reverseProbability);
-                }
+            currentInfo[run] = cur;
+            curLnL[run] = lnL;
+            });
 
-            if (std::log(rng->uniformRv()) < lnR)
-                {
-                currentInfo[run] = newInfo;
-                curLnL[run] = newLnL;
-                }
-
-            samples[run]->sampleTree(currentInfo[run]->hash);
-            }
-
-        if (shouldSample(n) == true)
-            writeConvergenceLine(n);
-
-        printToScreen(n, curLnL);
+        if (shouldSample(last) == true)
+            writeConvergenceLine(last);
+        printToScreen(last, curLnL);
+        first = last + 1;
         }
     std::cout << std::endl;
 
     TreeSamples::combinedPrint(samples);
-    TreeSamples::compareSamples(samples);
+    TreeSamples::compareSamples(samples, threadPool);
 
     std::cout << std::endl;
 }
@@ -642,6 +741,7 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns, int
         samples[run]->reserve(numCycles);
         }
         
+    // swap counts are kept per replicate, so the replicates can run in parallel, and summed at the end
     std::vector<std::vector<int>> numAttemptedSwaps(numHeatedChains);
     std::vector<std::vector<int>> numAcceptedSwaps(numHeatedChains);
     for (size_t i=0; i<numHeatedChains; i++)
@@ -649,75 +749,97 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns, int
         numAttemptedSwaps[i].resize(numHeatedChains,0);
         numAcceptedSwaps[i].resize(numHeatedChains,0);
         }
+    std::vector<std::vector<std::vector<int>>> runAttemptedSwaps(numRuns, numAttemptedSwaps);
+    std::vector<std::vector<std::vector<int>>> runAcceptedSwaps(numRuns, numAcceptedSwaps);
 
     openConvergenceLog((size_t)numRuns);
 
-    for (int n=1; n<=numCycles; n++)
+    std::vector<RandomVariable> runRng = makeRunGenerators(numRuns);
+    std::vector<std::vector<int>> runSubset(numRuns);
+
+    for (uint32_t first=1; first<=numCycles; )
         {
-        for (int run=0; run<numRuns; run++)
+        uint32_t last = segmentEnd(first);
+        forEachRun(numRuns, [&](int run)
             {
-            for (int chain=0; chain<numHeatedChains; chain++)
+            RandomVariable* r = &runRng[run];
+            std::vector<int>& subset = runSubset[run];
+            std::vector<double>& runLnL = curLnL[run];
+            std::vector<TreeInfo*>& runInfo = currentInfo[run];
+            std::vector<int>& runIndex = chainIndex[run];
+            for (uint32_t n=first; n<=last; n++)
                 {
-                double forwardProbability = 0.0;
-                TreeInfo* newInfo = chooseTreeInfo(currentInfo[run][chain], forwardProbability, nNeighbors, power);
-                if (newInfo == nullptr)
-                    Msg::error("New tree is null");
-
-                double reverseProbability = findTreeProbability(newInfo, currentInfo[run][chain]->hash, nNeighbors, power);
-
-                double heatBeta = heat(chainIndex[run][chain], temperature);
-                double newLnL = newInfo->lnLikelihood;
-                double lnR;
-                if (nNeighbors == 0)
+                for (int chain=0; chain<numHeatedChains; chain++)
                     {
-                    double lnLikelihoodRatio = newLnL - curLnL[run][chain];
-                    double lnProposalRatio = std::log(reverseProbability) - std::log(forwardProbability);
-                    lnR = heatBeta * lnLikelihoodRatio + lnProposalRatio;
-                    }
-                else
-                    {
-                    // chain c targets pi^heatBeta; the proposal still biases by power
-                    lnR = (power - heatBeta) * (curLnL[run][chain] - newLnL) +
-                          std::log(forwardProbability) - std::log(reverseProbability);
+                    double forwardProbability = 0.0;
+                    TreeInfo* newInfo = chooseTreeInfo(r, subset, runInfo[chain], forwardProbability, nNeighbors, power);
+                    if (newInfo == nullptr)
+                        Msg::error("New tree is null");
+
+                    double reverseProbability = findTreeProbability(r, subset, newInfo, runInfo[chain], nNeighbors, power);
+
+                    double heatBeta = heat(runIndex[chain], temperature);
+                    double newLnL = newInfo->lnLikelihood;
+                    double lnR;
+                    if (nNeighbors == 0)
+                        {
+                        double lnLikelihoodRatio = newLnL - runLnL[chain];
+                        double lnProposalRatio = std::log(reverseProbability) - std::log(forwardProbability);
+                        lnR = heatBeta * lnLikelihoodRatio + lnProposalRatio;
+                        }
+                    else
+                        {
+                        // chain c targets pi^heatBeta; the proposal still biases by power
+                        lnR = (power - heatBeta) * (runLnL[chain] - newLnL) +
+                              std::log(forwardProbability) - std::log(reverseProbability);
+                        }
+
+                    if (std::log(r->uniformRv()) < lnR)
+                        {
+                        runInfo[chain] = newInfo;
+                        runLnL[chain] = newLnL;
+                        }
                     }
 
-                if (std::log(rng->uniformRv()) < lnR)
+                // swap temperatures assigned to two physical chains
+                std::pair<int,int> idx = chooseChains(r, numHeatedChains);
+                int idx0 = runIndex[idx.first];
+                int idx1 = runIndex[idx.second];
+                double lnR = (runLnL[idx.first]  * heat(idx1, temperature) +
+                              runLnL[idx.second] * heat(idx0, temperature));
+                lnR -=      (runLnL[idx.first]  * heat(idx0, temperature) +
+                             runLnL[idx.second] * heat(idx1, temperature));
+                if (std::log(r->uniformRv()) < lnR)
                     {
-                    currentInfo[run][chain] = newInfo;
-                    curLnL[run][chain] = newLnL;
+                    runIndex[idx.first] = idx1;
+                    runIndex[idx.second] = idx0;
+                    runAcceptedSwaps[run][idx0][idx1]++;
+                    runAcceptedSwaps[run][idx1][idx0]++;
                     }
+                runAttemptedSwaps[run][idx0][idx1]++;
+                runAttemptedSwaps[run][idx1][idx0]++;
+
+                int coldIdx = coldChainIndex(runIndex);
+                samples[run]->sampleTree(runInfo[coldIdx]->hash);
                 }
+            });
 
-            // swap temperatures assigned to two physical chains
-            std::pair<int,int> idx = chooseChains(numHeatedChains);
-            int idx0 = chainIndex[run][idx.first];
-            int idx1 = chainIndex[run][idx.second];
-            double lnR = (curLnL[run][idx.first]  * heat(idx1, temperature) +
-                          curLnL[run][idx.second] * heat(idx0, temperature));
-            lnR -=      (curLnL[run][idx.first]  * heat(idx0, temperature) +
-                         curLnL[run][idx.second] * heat(idx1, temperature));
-            if (std::log(rng->uniformRv()) < lnR)
-                {
-                chainIndex[run][idx.first] = idx1;
-                chainIndex[run][idx.second] = idx0;
-                numAcceptedSwaps[idx0][idx1]++;
-                numAcceptedSwaps[idx1][idx0]++;
-                }
-            numAttemptedSwaps[idx0][idx1]++;
-            numAttemptedSwaps[idx1][idx0]++;            
-
-            int coldIdx = coldChainIndex(chainIndex[run]);
-            samples[run]->sampleTree(currentInfo[run][coldIdx]->hash);
-            }
-
-        if (shouldSample(n) == true)
-            writeConvergenceLine(n);
-
-        printToScreen(n, curLnL, chainIndex);
+        if (shouldSample(last) == true)
+            writeConvergenceLine(last);
+        printToScreen(last, curLnL, chainIndex);
+        first = last + 1;
         }
 
+    for (int run=0; run<numRuns; run++)
+        for (size_t i=0; i<numHeatedChains; i++)
+            for (size_t j=0; j<numHeatedChains; j++)
+                {
+                numAttemptedSwaps[i][j] += runAttemptedSwaps[run][i][j];
+                numAcceptedSwaps[i][j] += runAcceptedSwaps[run][i][j];
+                }
+
     TreeSamples::combinedPrint(samples);
-    TreeSamples::compareSamples(samples);
+    TreeSamples::compareSamples(samples, threadPool);
     
     // show chain swap acceptance information
     std::cout << "        ";
@@ -759,8 +881,9 @@ void Mcmc::writeConvergenceLine(int cycle) {
 
     convergenceLog << cycle << '\t';
 
-    TreeConvergenceDiagnostics diagnostics(treeCache);
-    diagnostics.writeStatsLine(convergenceLog, samples);
+    if (diagnostics == nullptr)
+        diagnostics = std::make_unique<TreeConvergenceDiagnostics>(treeCache);
+    diagnostics->writeStatsLine(convergenceLog, samples);
 
     convergenceLog << '\n';
     convergenceLog.flush();

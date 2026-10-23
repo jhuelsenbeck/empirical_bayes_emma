@@ -1,3 +1,4 @@
+#include <exception>
 #include <Eigen/SparseLU>
 
 #if defined(__APPLE__) && !defined(NO_ACCELERATE)
@@ -118,9 +119,10 @@ namespace {
                                     SparseMatVecTask(void) = delete;
                                     SparseMatVecTask(const int* out, const int* in, const double* v,
                                                      const double* x, double* y,
-                                                     Eigen::Index lo, Eigen::Index hi) :
+                                                     Eigen::Index lo, Eigen::Index hi, const double* scale = nullptr,
+                                                     const int* outRow = nullptr) :
                                         outerIndex(out), innerIndex(in), values(v),
-                                        xIn(x), yOut(y), begin(lo), end(hi) { }
+                                        xIn(x), yOut(y), begin(lo), end(hi), rowScale(scale), outIndex(outRow) { }
             void                    run(void) override;
 
         private:
@@ -131,6 +133,8 @@ namespace {
             double*                 yOut;
             Eigen::Index            begin;
             Eigen::Index            end;
+            const double*           rowScale;                     // optional: y_i is scaled by rowScale[i]
+            const int*              outIndex;                     // optional: row i is written to y[outIndex[i]]
     };
 
     void SparseMatVecTask::run(void) {
@@ -140,7 +144,7 @@ namespace {
             double sum = 0.0;
             for (int k = outerIndex[i]; k < outerIndex[i+1]; ++k)
                 sum += values[k] * xIn[innerIndex[k]];
-            yOut[i] = sum;
+            yOut[(outIndex != nullptr) ? outIndex[i] : i] = (rowScale != nullptr) ? rowScale[i] * sum : sum;
             }
     }
 
@@ -208,6 +212,35 @@ namespace {
             const Eigen::VectorXd*    w;
     };
 
+    // S + sigma I, for the solve of the most negative eigenvalue. Spectra stops when a Ritz pair's residual
+    // falls below tol * |theta|, a tolerance relative to the eigenvalue itself. Where lambda_min sits in
+    // the dense cluster just below zero -- -1e-4 on a 9-taxon TBR kernel -- that asks for a residual near
+    // 1e-11, which the cluster cannot deliver in any reasonable number of restarts: a 10-taxon TBR solve
+    // ran 300 restarts (400 s) without converging. Shifted by sigma = 2 the spectrum lies in [1, 3] and
+    // the same tolerance is, in effect, an absolute one of 1e-7 to 3e-7 on lambda_min wherever it lies.
+    // (A shift of 1 would put a lambda_min near -1, a chain flipping between two states, back at zero.)
+    // The Ritz vectors are unchanged and the Ritz values move by exactly sigma.
+    class ShiftedSymOp {
+
+        public:
+            using Scalar = double;
+                                    ShiftedSymOp(void) = delete;
+                                    ShiftedSymOp(const AnalyzerSymOp& base, double s) : op(&base), sigma(s) { }
+            Eigen::Index            rows(void) const { return op->rows(); }
+            Eigen::Index            cols(void) const { return op->cols(); }
+            void                    perform_op(const double* x_in, double* y_out) const
+                                        {
+                                        op->perform_op(x_in, y_out);                 // y = S x
+                                        Eigen::Index N = op->rows();
+                                        for (Eigen::Index i = 0; i < N; ++i)         // y = (S + sigma I) x
+                                            y_out[i] += sigma * x_in[i];
+                                        }
+
+        private:
+            const AnalyzerSymOp* op;
+            double               sigma;
+    };
+
     // The inverse of A = I - S + w w', applied by a conjugate-gradient solve, for a shift-invert Lanczos
     // solve of the slow end of the spectrum. A maps the eigenvalue lambda of S to 1 - lambda (and w to
     // 1), so A^{-1} maps the slow modes, lambda near 1, to its largest and best-separated eigenvalues,
@@ -238,9 +271,10 @@ namespace {
                                     SparseMatBlockTask(void) = delete;
                                     SparseMatBlockTask(const int* out, const int* in, const double* v,
                                                        const double* x, double* y, int k,
-                                                       Eigen::Index lo, Eigen::Index hi) :
+                                                       Eigen::Index lo, Eigen::Index hi, const double* scale = nullptr,
+                                                       const int* outRow = nullptr) :
                                         outerIndex(out), innerIndex(in), values(v),
-                                        xIn(x), yOut(y), numCols(k), begin(lo), end(hi) { }
+                                        xIn(x), yOut(y), numCols(k), begin(lo), end(hi), rowScale(scale), outIndex(outRow) { }
             void                    run(void) override;
 
         private:
@@ -252,13 +286,15 @@ namespace {
             int                     numCols;
             Eigen::Index            begin;
             Eigen::Index            end;
+            const double*           rowScale;                     // optional: Y row i is scaled by rowScale[i]
+            const int*              outIndex;                     // optional: row i is written to Y row outIndex[i]
     };
 
     void SparseMatBlockTask::run(void) {
 
         for (Eigen::Index i = begin; i < end; ++i)
             {
-            double* yi = yOut + i * numCols;
+            double* yi = yOut + static_cast<Eigen::Index>((outIndex != nullptr) ? outIndex[i] : i) * numCols;
             for (int c = 0; c < numCols; ++c)
                 yi[c] = 0.0;
             for (int k = outerIndex[i]; k < outerIndex[i+1]; ++k)
@@ -268,7 +304,72 @@ namespace {
                 for (int c = 0; c < numCols; ++c)
                     yi[c] += v * xj[c];
                 }
+            if (rowScale != nullptr)
+                {
+                double si = rowScale[i];
+                for (int c = 0; c < numCols; ++c)
+                    yi[c] = si * yi[c];
+                }
             }
+    }
+
+    // body(lo, hi, part) over a fixed partition of the rows [0, N) into `parts` ranges, on the thread
+    // pool when there is one. Reductions are accumulated per part and combined in part order by the
+    // caller, so a result does not depend on the number of threads or on how the parts are scheduled.
+    class RowRangeTask : public ThreadTask {
+
+        public:
+                                    RowRangeTask(const std::function<void(Eigen::Index, Eigen::Index, int)>* f,
+                                                 Eigen::Index lo, Eigen::Index hi, int p) :
+                                        body(f), begin(lo), end(hi), part(p) { }
+            void                    run(void) override
+                                        {
+                                        try
+                                            {
+                                            (*body)(begin, end, part);
+                                            }
+                                        catch (...)
+                                            {
+                                            failure = std::current_exception();
+                                            }
+                                        }
+            std::exception_ptr      failure;                      // rethrown on the calling thread
+
+        private:
+            const std::function<void(Eigen::Index, Eigen::Index, int)>* body;
+            Eigen::Index            begin;
+            Eigen::Index            end;
+            int                     part;
+    };
+
+    void forRowRanges(ThreadPool* pool, Eigen::Index N, int parts,
+                      const std::function<void(Eigen::Index, Eigen::Index, int)>& body) {
+
+        Eigen::Index chunk = (N + parts - 1) / parts;
+        std::vector<RowRangeTask> tasks;
+        tasks.reserve(static_cast<size_t>(parts));
+        for (int p = 0; p < parts; ++p)
+            {
+            Eigen::Index lo = std::min(N, static_cast<Eigen::Index>(p) * chunk);
+            Eigen::Index hi = std::min(N, lo + chunk);
+            tasks.emplace_back(&body, lo, hi, p);
+            }
+        if (pool == nullptr)
+            {
+            for (RowRangeTask& t : tasks)
+                t.run();
+            }
+        else
+            {
+            for (RowRangeTask& t : tasks)
+                pool->pushTask(&t);
+            pool->wait();
+            }
+        // The pool's workers report and swallow an exception; a part that failed would leave its rows
+        // unwritten (the kernel build fills preallocated storage), so the failure is raised here instead.
+        for (RowRangeTask& t : tasks)
+            if (t.failure)
+                std::rethrow_exception(t.failure);
     }
 
 } // anonymous namespace
@@ -289,6 +390,95 @@ void MarkovChainAnalyzer::applySymmetrizedLaplacian(const Vector& piSqrt, const 
     Vector Sy(N);
     applyS(y.data(), Sy.data());
     out = y - Sy;                                                 // (I - S) y
+}
+
+// A copy of the kernel with its states renumbered in breadth-first order over the kernel's own graph,
+// built on the first product with a large kernel. The states are numbered by the hash map that holds
+// the trees, which scatters a tree's neighbors across the whole state vector: every entry of a product
+// then reads x from a random place in a 16 MB vector. Breadth-first order puts a tree's neighbors in
+// the same or an adjacent level, and more of the reads of x hit cache: on the 10-taxon TBR kernel the
+// eigensolves ran 30% faster and the Kemeny estimate 29%. The price is the copy itself, 7 GB for that
+// kernel. Only the products use it; every other routine, and every output, sees the states in their
+// original order. Within a row the entries are summed in the new column order, so a product differs
+// from the original in rounding only.
+bool MarkovChainAnalyzer::ensurePermuted(void) const {
+
+    if (permState != 0)
+        return permState == 1;
+    permState = -1;
+    if (!isSparse || n < permMinStates)
+        return false;
+
+    ensureRowSparse();
+    if (!piSqrtReady)
+        {
+        piSqrtCached = posteriorSqrt();
+        piSqrtReady = true;
+        }
+    Eigen::Index N = static_cast<Eigen::Index>(n);
+    const int*    outer = P_row_sparse.outerIndexPtr();
+    const int*    inner = P_row_sparse.innerIndexPtr();
+    const double* vals  = P_row_sparse.valuePtr();
+
+    // breadth-first order, neighbors taken in row order, from state 0 (and from the next unnumbered
+    // state should the graph not be connected)
+    permOrder.assign(static_cast<size_t>(N), 0);
+    std::vector<int> pos(static_cast<size_t>(N), -1);
+    Eigen::Index numbered = 0;
+    for (Eigen::Index s = 0; s < N; ++s)
+        {
+        if (pos[static_cast<size_t>(s)] >= 0)
+            continue;
+        Eigen::Index head = numbered;
+        pos[static_cast<size_t>(s)] = static_cast<int>(numbered);
+        permOrder[static_cast<size_t>(numbered++)] = static_cast<int>(s);
+        while (head < numbered)
+            {
+            int i = permOrder[static_cast<size_t>(head++)];
+            for (int k = outer[i]; k < outer[i + 1]; ++k)
+                {
+                int j = inner[k];
+                if (pos[static_cast<size_t>(j)] < 0)
+                    {
+                    pos[static_cast<size_t>(j)] = static_cast<int>(numbered);
+                    permOrder[static_cast<size_t>(numbered++)] = j;
+                    }
+                }
+            }
+        }
+
+    permOuter.assign(static_cast<size_t>(N) + 1, 0);
+    for (Eigen::Index k = 0; k < N; ++k)
+        {
+        int i = permOrder[static_cast<size_t>(k)];
+        permOuter[static_cast<size_t>(k) + 1] = permOuter[static_cast<size_t>(k)] + (outer[i + 1] - outer[i]);
+        }
+    permInner.resize(static_cast<size_t>(permOuter[static_cast<size_t>(N)]));
+    permValues.resize(permInner.size());
+    permSqrtPi.resize(static_cast<size_t>(N));
+    const double* sp = piSqrtCached.data();
+    forRowRanges(threadPool, N, 256, [&](Eigen::Index lo, Eigen::Index hi, int)
+        {
+        std::vector<std::pair<int, double>> row;
+        for (Eigen::Index k = lo; k < hi; ++k)
+            {
+            int i = permOrder[static_cast<size_t>(k)];
+            permSqrtPi[static_cast<size_t>(k)] = sp[i];
+            row.clear();
+            for (int e = outer[i]; e < outer[i + 1]; ++e)
+                row.emplace_back(pos[static_cast<size_t>(inner[e])], vals[e]);
+            std::sort(row.begin(), row.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+            int at = permOuter[static_cast<size_t>(k)];
+            for (const auto& [j, v] : row)
+                {
+                permInner[static_cast<size_t>(at)]  = j;
+                permValues[static_cast<size_t>(at)] = v;
+                ++at;
+                }
+            }
+        });
+    permState = 1;
+    return true;
 }
 
 void MarkovChainAnalyzer::applyS(const double* x, double* y) const {
@@ -317,6 +507,63 @@ void MarkovChainAnalyzer::applyS(const double* x, double* y) const {
         piSqrtCached = posteriorSqrt();
         piSqrtReady = true;
         }
+    if (isSparse && threadPool != nullptr && ensurePermuted())
+        {
+        // The product with the locality-ordered copy of the kernel (see ensurePermuted): x is gathered
+        // into the copy's order, scaled, as it is read, and each row of the product is scaled and written
+        // back to its own state.
+        applyScratch.resize(N);
+        const int*    ord = permOrder.data();
+        const double* spP = permSqrtPi.data();
+        double*       tp  = applyScratch.data();
+        forRowRanges(N >= (Eigen::Index(1) << 16) ? threadPool : nullptr, N, 64, [&](Eigen::Index lo, Eigen::Index hi, int)
+            {
+            for (Eigen::Index k = lo; k < hi; ++k)
+                tp[k] = x[ord[k]] / spP[k];
+            });
+        int numTasks = std::max(1, threadPool->getThreadCount() * 4);
+        Eigen::Index chunk = std::max<Eigen::Index>(1, (N + numTasks - 1) / numTasks);
+        std::vector<SparseMatVecTask> tasks;
+        tasks.reserve(static_cast<size_t>(numTasks) + 1);
+        for (Eigen::Index lo = 0; lo < N; lo += chunk)
+            tasks.emplace_back(permOuter.data(), permInner.data(), permValues.data(), tp, y, lo, std::min(N, lo + chunk), spP, ord);
+        for (SparseMatVecTask& t : tasks)
+            threadPool->pushTask(&t);
+        threadPool->wait();
+        return;
+        }
+
+    if (isSparse && threadPool != nullptr)
+        {
+        // The scalings are done in the threaded passes, into a buffer kept between calls: D^{-1/2} x in
+        // a pass of its own and D^{1/2} on each entry of the product as it is formed. Done by Eigen, as
+        // earlier, they were two serial passes and two fresh n-vectors per product, at ten taxa a
+        // sizeable share of a product with the NNI kernel. The arithmetic is the same.
+        ensureRowSparse();
+        applyScratch.resize(N);
+        const double* sp = piSqrtCached.data();
+        double*       tp = applyScratch.data();
+        forRowRanges(N >= (Eigen::Index(1) << 16) ? threadPool : nullptr, N, 64, [&](Eigen::Index lo, Eigen::Index hi, int)
+            {
+            for (Eigen::Index i = lo; i < hi; ++i)
+                tp[i] = x[i] / sp[i];
+            });
+
+        const int*    outerIndex = P_row_sparse.outerIndexPtr();
+        const int*    innerIndex = P_row_sparse.innerIndexPtr();
+        const double* values     = P_row_sparse.valuePtr();
+        int numTasks = std::max(1, threadPool->getThreadCount() * 4);  // oversubscribe: rows differ in length
+        Eigen::Index chunk = std::max<Eigen::Index>(1, (N + numTasks - 1) / numTasks);
+        std::vector<SparseMatVecTask> tasks;
+        tasks.reserve(static_cast<size_t>(numTasks) + 1);
+        for (Eigen::Index lo = 0; lo < N; lo += chunk)
+            tasks.emplace_back(outerIndex, innerIndex, values, tp, y, lo, std::min(N, lo + chunk), sp);
+        for (SparseMatVecTask& t : tasks)
+            threadPool->pushTask(&t);
+        threadPool->wait();
+        return;
+        }
+
     Eigen::Map<const Vector> xm(x, N);
     Vector t = xm.array() / piSqrtCached.array();
     Vector u(N);
@@ -342,13 +589,60 @@ void MarkovChainAnalyzer::applySBlock(const double* X, double* Y, int numCols) c
     using RowBlock = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
     Eigen::Map<const RowBlock> Xm(X, N, numCols);
     Eigen::Map<RowBlock>       Ym(Y, N, numCols);
-    RowBlock T = piSqrtCached.cwiseInverse().asDiagonal() * Xm;   // D^{-1/2} X
 
     if (!isSparse)
         {
+        RowBlock T = piSqrtCached.cwiseInverse().asDiagonal() * Xm;   // D^{-1/2} X
         Ym.noalias() = piSqrtCached.asDiagonal() * (P_dense * T);
         return;
         }
+
+    if (threadPool != nullptr && ensurePermuted())
+        {
+        // as in applyS: gather and scale into the locality order, multiply, scale and scatter back
+        RowBlock T(N, numCols);
+        const int*    ord = permOrder.data();
+        const double* spP = permSqrtPi.data();
+        double*       tp  = T.data();
+        forRowRanges(threadPool, N, 64, [&](Eigen::Index lo, Eigen::Index hi, int)
+            {
+            for (Eigen::Index k = lo; k < hi; ++k)
+                {
+                double inv = 1.0 / spP[k];
+                const double* xk = X + static_cast<Eigen::Index>(ord[k]) * numCols;
+                for (int c = 0; c < numCols; ++c)
+                    tp[k * numCols + c] = inv * xk[c];
+                }
+            });
+        int numTasks = std::max(1, threadPool->getThreadCount() * 4);
+        Eigen::Index chunk = std::max<Eigen::Index>(1, (N + numTasks - 1) / numTasks);
+        std::vector<SparseMatBlockTask> tasks;
+        tasks.reserve(static_cast<size_t>(numTasks) + 1);
+        for (Eigen::Index lo = 0; lo < N; lo += chunk)
+            tasks.emplace_back(permOuter.data(), permInner.data(), permValues.data(), T.data(), Y, numCols, lo,
+                               std::min(N, lo + chunk), spP, ord);
+        for (SparseMatBlockTask& t : tasks)
+            threadPool->pushTask(&t);
+        threadPool->wait();
+        return;
+        }
+
+    // The two diagonal scalings are formed in the threaded passes rather than by Eigen on one core:
+    // D^{-1/2} X in a pass of its own, and D^{1/2} on each row of the product as it is finished.
+    RowBlock T(N, numCols);                                       // D^{-1/2} X
+    {
+        const double* sp = piSqrtCached.data();
+        double*       tp = T.data();
+        forRowRanges(threadPool, N, 64, [&](Eigen::Index lo, Eigen::Index hi, int)
+            {
+            for (Eigen::Index i = lo; i < hi; ++i)
+                {
+                double inv = 1.0 / sp[i];
+                for (int c = 0; c < numCols; ++c)
+                    tp[i * numCols + c] = inv * X[i * numCols + c];
+                }
+            });
+    }
 
     ensureRowSparse();
     const int*    outerIndex = P_row_sparse.outerIndexPtr();
@@ -360,7 +654,8 @@ void MarkovChainAnalyzer::applySBlock(const double* X, double* Y, int numCols) c
     std::vector<SparseMatBlockTask> tasks;
     tasks.reserve(static_cast<size_t>(numTasks) + 1);
     for (Eigen::Index lo = 0; lo < N; lo += chunk)
-        tasks.emplace_back(outerIndex, innerIndex, values, T.data(), Y, numCols, lo, std::min(N, lo + chunk));
+        tasks.emplace_back(outerIndex, innerIndex, values, T.data(), Y, numCols, lo, std::min(N, lo + chunk),
+                           piSqrtCached.data());
     if (threadPool == nullptr)
         {
         for (SparseMatBlockTask& t : tasks)
@@ -372,7 +667,6 @@ void MarkovChainAnalyzer::applySBlock(const double* X, double* Y, int numCols) c
             threadPool->pushTask(&t);
         threadPool->wait();
         }
-    Ym = piSqrtCached.asDiagonal() * Ym;                          // D^{1/2} P D^{-1/2} X
 }
 
 void MarkovChainAnalyzer::buildAcceleratedOperator(void) const {
@@ -673,34 +967,10 @@ void MarkovChainAnalyzer::buildFromCache(TreeCache* cache) {
     // the products: at ten taxa, for TBR, some 12 GB of triplets and 9 GB of temporary on the way to
     // two 7 GB copies of the same matrix. One row-major copy now serves every routine; those that
     // need a column of P read it from the corresponding row through detailed balance.
-    //
-    // The storage is reserved from an upper bound on each row's length: its distinct neighbors in the
-    // support, plus the diagonal. The rows of the cache are sorted by likelihood, so a neighbor listed
-    // twice appears in consecutive entries, and counting the changes along the row bounds the number
-    // of distinct columns without a sort.
     std::vector<TreeInfo*> rowTree(n, nullptr);                   // the tree at each state index
     for (const auto& [h, info] : tcache)
         if (info && info->stateIndex >= 0)
             rowTree[static_cast<size_t>(info->stateIndex)] = info;
-
-    size_t numEntries = 0;
-    for (size_t i = 0; i < n; ++i)
-        {
-        NeighborList nbrs = cache->neighbors(rowTree[i]);
-        size_t distinct = 0;
-        for (uint32_t k = 0; k < nbrs.size(); ++k)
-            if (nbrs[k]->stateIndex >= 0 && (k == 0 || nbrs.indexAt(k) != nbrs.indexAt(k - 1)))
-                ++distinct;
-        numEntries += distinct + 1;                               // + the diagonal
-        }
-
-    if (isSparse)
-        {
-        P_row_sparse = RowSparseMatrix(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(n));
-        P_row_sparse.reserve(static_cast<Eigen::Index>(numEntries));
-        }
-    else
-        P_dense = DenseMatrix::Zero(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(n));
 
     // The transition probability from i to j requires the REVERSE proposal probability, q(i|j),
     // which is a property of j's neighborhood rather than of i's. Searching j's neighbor list for i
@@ -716,21 +986,20 @@ void MarkovChainAnalyzer::buildFromCache(TreeCache* cache) {
     // TreeCache keeps them, so the reverse proposal probability is available in constant time.
     if (cache->hasNeighborProposalProbabilities() == false)
         throw std::runtime_error("MarkovChainAnalyzer (" + name + "): proposal probabilities have not been cached");
-    double worstProposalDefect = 0.0;
 
-    std::vector<std::pair<int, double>> row;                      // (column, P_ij) for one row
-    for (size_t ii = 0; ii < n; ++ii)
+    // Row ii of P as (column, P_ij) pairs, columns ascending, with the entries for a neighbor listed
+    // more than once summed in the order they were listed (the order in which the old triplet
+    // assembly summed them). Also returns the row's proposal-mass defect and its self transition.
+    auto formRow = [&](size_t ii, std::vector<std::pair<int, double>>& row, double& defect, double& selfProb)
         {
         TreeInfo* info_from = rowTree[ii];
-        Eigen::Index i = static_cast<Eigen::Index>(ii);
-        pi(i) = info_from->posteriorProbability;
         double sumTransition = 0.0;
 
         NeighborList nbrs = cache->neighbors(info_from);
         double rawProposalMass = 0.0;
         for (uint32_t k = 0; k < nbrs.size(); ++k)
             rawProposalMass += cache->neighborProposalProbability(info_from, nbrs[k]);
-        worstProposalDefect = std::max(worstProposalDefect, std::abs(rawProposalMass - 1.0));
+        defect = std::abs(rawProposalMass - 1.0);
 
         double pi_i   = info_from->posteriorProbability;
 
@@ -763,38 +1032,114 @@ void MarkovChainAnalyzer::buildFromCache(TreeCache* cache) {
                 }
             }
 
-        double selfProb = 1.0 - sumTransition;
+        selfProb = 1.0 - sumTransition;
         if (selfProb < 0.0 && selfProb > -1e-12)
             selfProb = 0.0;
-        if (selfProb < 0.0)
-            std::cerr << "Warning: negative self transition at row " << i << ": " << selfProb << "\n";
-        row.emplace_back(static_cast<int>(i), std::max(0.0, selfProb));
+        row.emplace_back(static_cast<int>(ii), std::max(0.0, selfProb));
 
-        // Columns in ascending order, the entries for a neighbor listed more than once summed in the
-        // order they were listed (the order in which the old triplet assembly summed them).
         std::stable_sort(row.begin(), row.end(),
                          [](const auto& a, const auto& b) { return a.first < b.first; });
 
-        if (isSparse)
+        // merge the repeated columns in place
+        size_t out = 0;
+        for (size_t k = 0; k < row.size(); )
             {
-            P_row_sparse.startVec(i);
-            for (size_t k = 0; k < row.size(); )
-                {
-                int    j = row[k].first;
-                double v = row[k].second;
-                for (++k; k < row.size() && row[k].first == j; ++k)
-                    v += row[k].second;
-                P_row_sparse.insertBack(i, j) = v;
-                }
+            int    j = row[k].first;
+            double v = row[k].second;
+            for (++k; k < row.size() && row[k].first == j; ++k)
+                v += row[k].second;
+            row[out++] = { j, v };
             }
-        else
+        row.resize(out);
+        };
+
+    double worstProposalDefect = 0.0;
+    std::vector<std::pair<Eigen::Index, double>> negativeSelf;    // (row, P_ii) for the warning
+
+    if (isSparse)
+        {
+        // The rows are formed in parallel, twice: once to learn each row's length, from which the
+        // compressed row offsets follow, and once to write the row into its place. Forming a row is a
+        // few exponentials per entry, and done on one core this was some 35 s per TBR kernel at ten
+        // taxa; the second pass costs less than holding a second copy of the kernel would in memory.
+        const int parts = 256;
+        std::vector<int>    rowLength(n, 0);
+        std::vector<double> partDefect(static_cast<size_t>(parts), 0.0);
+        std::vector<std::vector<std::pair<Eigen::Index, double>>> partNegative(static_cast<size_t>(parts));
+        forRowRanges(threadPool, static_cast<Eigen::Index>(n), parts, [&](Eigen::Index lo, Eigen::Index hi, int part)
             {
+            std::vector<std::pair<int, double>> row;
+            double defect = 0.0, selfProb = 0.0;
+            for (Eigen::Index i = lo; i < hi; ++i)
+                {
+                size_t ii = static_cast<size_t>(i);
+                formRow(ii, row, defect, selfProb);
+                rowLength[ii] = static_cast<int>(row.size());
+                pi(i) = rowTree[ii]->posteriorProbability;
+                partDefect[static_cast<size_t>(part)] = std::max(partDefect[static_cast<size_t>(part)], defect);
+                if (selfProb < 0.0)
+                    partNegative[static_cast<size_t>(part)].push_back({ i, selfProb });
+                }
+            });
+        for (int part = 0; part < parts; ++part)
+            {
+            worstProposalDefect = std::max(worstProposalDefect, partDefect[static_cast<size_t>(part)]);
+            for (const auto& e : partNegative[static_cast<size_t>(part)])
+                negativeSelf.push_back(e);
+            }
+
+        size_t numEntries = 0;
+        for (size_t ii = 0; ii < n; ++ii)
+            numEntries += static_cast<size_t>(rowLength[ii]);
+        if (numEntries > static_cast<size_t>(std::numeric_limits<int>::max()))
+            throw std::runtime_error("MarkovChainAnalyzer (" + name + "): kernel too large for 32-bit indices");
+
+        P_row_sparse = RowSparseMatrix(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(n));
+        P_row_sparse.resizeNonZeros(static_cast<Eigen::Index>(numEntries));
+        int* outer = P_row_sparse.outerIndexPtr();
+        outer[0] = 0;
+        for (size_t ii = 0; ii < n; ++ii)
+            outer[ii + 1] = outer[ii] + rowLength[ii];
+        std::vector<int>().swap(rowLength);
+        int*    inner  = P_row_sparse.innerIndexPtr();
+        double* values = P_row_sparse.valuePtr();
+
+        forRowRanges(threadPool, static_cast<Eigen::Index>(n), parts, [&](Eigen::Index lo, Eigen::Index hi, int)
+            {
+            std::vector<std::pair<int, double>> row;
+            double defect = 0.0, selfProb = 0.0;
+            for (Eigen::Index i = lo; i < hi; ++i)
+                {
+                formRow(static_cast<size_t>(i), row, defect, selfProb);
+                int at = outer[i];
+                for (const auto& [j, v] : row)
+                    {
+                    inner[at]  = j;
+                    values[at] = v;
+                    ++at;
+                    }
+                }
+            });
+        }
+    else
+        {
+        P_dense = DenseMatrix::Zero(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(n));
+        std::vector<std::pair<int, double>> row;
+        for (size_t ii = 0; ii < n; ++ii)
+            {
+            Eigen::Index i = static_cast<Eigen::Index>(ii);
+            double defect = 0.0, selfProb = 0.0;
+            formRow(ii, row, defect, selfProb);
+            pi(i) = rowTree[ii]->posteriorProbability;
+            worstProposalDefect = std::max(worstProposalDefect, defect);
+            if (selfProb < 0.0)
+                negativeSelf.push_back({ i, selfProb });
             for (const auto& [j, v] : row)
                 P_dense(i, j) += v;
             }
         }
-    if (isSparse)
-        P_row_sparse.finalize();
+    for (const auto& [i, v] : negativeSelf)
+        std::cerr << "Warning: negative self transition at row " << i << ": " << v << "\n";
 
     if (worstProposalDefect > 1e-6)
         std::cerr << "Warning: proposal probabilities deviate from 1 by up to "
@@ -1007,29 +1352,9 @@ IrreducibilityInfo MarkovChainAnalyzer::computeIrreducibilityInfo(double thresho
 
     if (isSparse) 
         {
-        ensureRowSparse();
-        for (Eigen::Index i = 0; i < N; ++i) 
-            {
-            size_t outDegree = 0;
-            double leaveProb = 0.0;
-            for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it) 
-                {
-                Eigen::Index j = it.col();
-                double p = it.value();
-                if (j != i && p > threshold) 
-                    {
-                    ++outDegree;
-                    leaveProb += p;
-                    }
-                }
-            info.min_out_degree = std::min(info.min_out_degree, outDegree);
-            info.max_out_degree = std::max(info.max_out_degree, outDegree);
-            info.min_leave_probability = std::min(info.min_leave_probability, leaveProb);
-            if (outDegree == 0)
-                ++info.num_states_with_zero_out_degree;
-            if (leaveProb <= tinyLeaveProb)
-                ++info.num_states_with_tiny_leave_probability;
-            }
+        std::vector<IrreducibilityInfo> infos(1, info);
+        outDegreeStats({ threshold }, tinyLeaveProb, infos);
+        info = infos[0];
         }
     else 
         {
@@ -1098,33 +1423,208 @@ bool MarkovChainAnalyzer::conjugateGradient(const std::function<void(const Vecto
     Vector Ap = Vector::Zero(N);
     double rz = r.dot(z);
 
+    // The vector work of an iteration is done in three threaded sweeps -- p.Ap; the updates of x and r
+    // with the preconditioned residual z and the sums r.r and r.z; the new direction p -- each over a
+    // fixed partition of the rows with the partial sums combined in order. Done with Eigen it was some
+    // seven serial passes, which on an NNI kernel of ten taxa cost more than the product with A. Below a
+    // million states a sweep is too short to repay handing it to the pool, and the same partition is
+    // walked serially, with the same result.
+    const int parts = 64;
+    ThreadPool* pool = (N >= (Eigen::Index(1) << 20)) ? threadPool : nullptr;
+    std::vector<double> partA(static_cast<size_t>(parts)), partB(static_cast<size_t>(parts));
+    double* xp = x.data();
+    double* rp = r.data();
+    double* zp = z.data();
+    double* pp = p.data();
+    const double* ap = Ap.data();
+    const double* dp = diagonal.data();
+    double rr = r.squaredNorm();
+
     for (iterations = 0; iterations < maxIterations; ++iterations)
         {
         if ((iterations & 255) == 0 && CgClock::now() >= cgDeadline)
             break;                                                // budget spent -> return not-converged
         applyA(p, Ap);
-        double pAp = p.dot(Ap);
+        forRowRanges(pool, N, parts, [&](Eigen::Index lo, Eigen::Index hi, int part)
+            {
+            double acc[4] = { 0.0, 0.0, 0.0, 0.0 };              // four chains, so the adds overlap
+            Eigen::Index i = lo;
+            for (; i + 4 <= hi; i += 4)
+                for (int k = 0; k < 4; ++k)
+                    acc[k] += pp[i + k] * ap[i + k];
+            for (; i < hi; ++i)
+                acc[0] += pp[i] * ap[i];
+            partA[static_cast<size_t>(part)] = (acc[0] + acc[1]) + (acc[2] + acc[3]);
+            });
+        double pAp = 0.0;
+        for (double v : partA)
+            pAp += v;
         if (!(pAp > 0.0))
             break;                                                // positive definiteness lost
         double alpha = rz / pAp;
-        x += alpha * p;
-        r -= alpha * Ap;
+        forRowRanges(pool, N, parts, [&](Eigen::Index lo, Eigen::Index hi, int part)
+            {
+            double accRR[4] = { 0.0, 0.0, 0.0, 0.0 }, accRZ[4] = { 0.0, 0.0, 0.0, 0.0 };
+            for (Eigen::Index i = lo; i < hi; ++i)
+                {
+                xp[i] += alpha * pp[i];
+                double ri = rp[i] - alpha * ap[i];
+                rp[i] = ri;
+                double zi = ri / dp[i];
+                zp[i] = zi;
+                accRR[i & 3] += ri * ri;
+                accRZ[i & 3] += ri * zi;
+                }
+            partA[static_cast<size_t>(part)] = (accRR[0] + accRR[1]) + (accRR[2] + accRR[3]);
+            partB[static_cast<size_t>(part)] = (accRZ[0] + accRZ[1]) + (accRZ[2] + accRZ[3]);
+            });
+        rr = 0.0;
+        double rzNext = 0.0;
+        for (int part = 0; part < parts; ++part)
+            {
+            rr     += partA[static_cast<size_t>(part)];
+            rzNext += partB[static_cast<size_t>(part)];
+            }
 
-        relativeResidual = r.norm() / bNorm;
+        relativeResidual = std::sqrt(rr) / bNorm;
         if (relativeResidual < tolerance)
             {
             ++iterations;
             return true;
             }
 
-        z = r.array() / diagonal.array();
-        double rzNext = r.dot(z);
-        p  = z + (rzNext / rz) * p;
+        double beta = rzNext / rz;
+        forRowRanges(pool, N, parts, [&](Eigen::Index lo, Eigen::Index hi, int)
+            {
+            for (Eigen::Index i = lo; i < hi; ++i)
+                pp[i] = zp[i] + beta * pp[i];
+            });
         rz = rzNext;
         }
 
-    relativeResidual = r.norm() / bNorm;
+    relativeResidual = std::sqrt(rr) / bNorm;
     return relativeResidual < tolerance;
+}
+
+// The out-degree and leaving-probability summaries of computeIrreducibilityInfo for several
+// thresholds in one threaded pass over the kernel, each row's leaving probability summed in column
+// order as before. infos[t] must arrive initialized (threshold, num_states, the min/max sentinels).
+void MarkovChainAnalyzer::outDegreeStats(const std::vector<double>& thresholds, double tinyLeaveProb,
+                                         std::vector<IrreducibilityInfo>& infos) const {
+
+    ensureRowSparse();
+    const size_t T = thresholds.size();
+    const int parts = 256;
+    struct PartStats {
+        std::vector<size_t> minDeg, maxDeg, zeroDeg, tinyLeave;
+        std::vector<double> minLeave;
+    };
+    std::vector<PartStats> ps(static_cast<size_t>(parts));
+    for (PartStats& p : ps)
+        {
+        p.minDeg.assign(T, std::numeric_limits<size_t>::max());
+        p.maxDeg.assign(T, 0);
+        p.zeroDeg.assign(T, 0);
+        p.tinyLeave.assign(T, 0);
+        p.minLeave.assign(T, std::numeric_limits<double>::infinity());
+        }
+    forRowRanges(threadPool, static_cast<Eigen::Index>(n), parts, [&](Eigen::Index lo, Eigen::Index hi, int part)
+        {
+        PartStats& p = ps[static_cast<size_t>(part)];
+        std::vector<size_t> outDegree(T);
+        std::vector<double> leaveProb(T);
+        for (Eigen::Index i = lo; i < hi; ++i)
+            {
+            std::fill(outDegree.begin(), outDegree.end(), 0);
+            std::fill(leaveProb.begin(), leaveProb.end(), 0.0);
+            for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it)
+                {
+                if (it.col() == i)
+                    continue;
+                double v = it.value();
+                for (size_t t = 0; t < T; ++t)
+                    if (v > thresholds[t])
+                        {
+                        ++outDegree[t];
+                        leaveProb[t] += v;
+                        }
+                }
+            for (size_t t = 0; t < T; ++t)
+                {
+                p.minDeg[t]   = std::min(p.minDeg[t], outDegree[t]);
+                p.maxDeg[t]   = std::max(p.maxDeg[t], outDegree[t]);
+                p.minLeave[t] = std::min(p.minLeave[t], leaveProb[t]);
+                if (outDegree[t] == 0)
+                    ++p.zeroDeg[t];
+                if (leaveProb[t] <= tinyLeaveProb)
+                    ++p.tinyLeave[t];
+                }
+            }
+        });
+    for (size_t t = 0; t < T; ++t)
+        for (const PartStats& p : ps)
+            {
+            infos[t].min_out_degree = std::min(infos[t].min_out_degree, p.minDeg[t]);
+            infos[t].max_out_degree = std::max(infos[t].max_out_degree, p.maxDeg[t]);
+            infos[t].min_leave_probability = std::min(infos[t].min_leave_probability, p.minLeave[t]);
+            infos[t].num_states_with_zero_out_degree += p.zeroDeg[t];
+            infos[t].num_states_with_tiny_leave_probability += p.tinyLeave[t];
+            }
+}
+
+// The number of states reachable from start along transitions above the threshold (or, reversed,
+// the number that can reach it), by a breadth-first search run level by level over the thread pool.
+// A state is claimed by an atomic exchange on its flag, so each is counted once whatever the order
+// in which the threads reach it. At ten taxa a TBR kernel has some 590 million entries, and the
+// single-threaded depth-first search, run forward and backward for each of seven thresholds, took
+// longer than the eigensolve. Reversed, the successors of i are the j with P(j,i) above the
+// threshold: column i of P. The kernel is stored by rows, but it is reversible, so
+// P(j,i) = pi_i P(i,j) / pi_j, and row i, whose support is the same, gives the column.
+size_t MarkovChainAnalyzer::countReachableSparse(Eigen::Index start, double threshold, bool reverse) const {
+
+    ensureRowSparse();
+    Eigen::Index N = static_cast<Eigen::Index>(n);
+    std::vector<unsigned char> visited(static_cast<size_t>(N), 0);
+    visited[static_cast<size_t>(start)] = 1;
+    std::vector<int> frontier(1, static_cast<int>(start));
+    size_t count = 1;
+
+    const int parts = (threadPool == nullptr) ? 1 : std::max(1, threadPool->getThreadCount() * 4);
+    std::vector<std::vector<int>> next(static_cast<size_t>(parts));
+    while (!frontier.empty())
+        {
+        int used = (frontier.size() < 4096) ? 1 : parts;
+        forRowRanges(used == 1 ? nullptr : threadPool, static_cast<Eigen::Index>(frontier.size()), used,
+                     [&](Eigen::Index lo, Eigen::Index hi, int part)
+            {
+            std::vector<int>& out = next[static_cast<size_t>(part)];
+            out.clear();
+            for (Eigen::Index f = lo; f < hi; ++f)
+                {
+                Eigen::Index i = frontier[static_cast<size_t>(f)];
+                for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it)
+                    {
+                    Eigen::Index j = it.col();
+                    if (j == i)
+                        continue;
+                    double v = reverse ? pi(i) * it.value() / pi(j) : it.value();
+                    if (v <= threshold)
+                        continue;
+                    unsigned char* flag = &visited[static_cast<size_t>(j)];
+                    if (__atomic_load_n(flag, __ATOMIC_RELAXED) == 0 &&
+                        __atomic_exchange_n(flag, static_cast<unsigned char>(1), __ATOMIC_RELAXED) == 0)
+                        out.push_back(static_cast<int>(j));
+                    }
+                }
+            });
+        frontier.clear();
+        for (int part = 0; part < used; ++part)
+            {
+            frontier.insert(frontier.end(), next[static_cast<size_t>(part)].begin(), next[static_cast<size_t>(part)].end());
+            count += next[static_cast<size_t>(part)].size();
+            }
+        }
+    return count;
 }
 
 size_t MarkovChainAnalyzer::countReachableForward(Eigen::Index start, double threshold) const {
@@ -1133,6 +1633,9 @@ size_t MarkovChainAnalyzer::countReachableForward(Eigen::Index start, double thr
     if (start < 0 || start >= N)
         return 0;
 
+    if (isSparse)
+        return countReachableSparse(start, threshold, false);
+
     std::vector<char> visited(static_cast<size_t>(N), 0);
     std::vector<Eigen::Index> stack;
     stack.reserve(1024);
@@ -1140,45 +1643,20 @@ size_t MarkovChainAnalyzer::countReachableForward(Eigen::Index start, double thr
     stack.push_back(start);
     size_t count = 1;
 
-    if (isSparse) 
+    while (!stack.empty()) 
         {
-        ensureRowSparse();
-        while (!stack.empty()) 
+        Eigen::Index i = stack.back();
+        stack.pop_back();
+        for (Eigen::Index j = 0; j < N; ++j) 
             {
-            Eigen::Index i = stack.back();
-            stack.pop_back();
-            for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it) 
+            if (j == i) continue;
+            if (P_dense(i, j) <= threshold) continue;
+            size_t jj = static_cast<size_t>(j);
+            if (!visited[jj]) 
                 {
-                Eigen::Index j = it.col();
-                if (j == i) continue;
-                if (it.value() <= threshold) continue;
-                size_t jj = static_cast<size_t>(j);
-                if (!visited[jj]) 
-                    {
-                    visited[jj] = 1;
-                    stack.push_back(j);
-                    ++count;
-                    }
-                }
-            }
-        }
-    else 
-        {
-        while (!stack.empty()) 
-            {
-            Eigen::Index i = stack.back();
-            stack.pop_back();
-            for (Eigen::Index j = 0; j < N; ++j) 
-                {
-                if (j == i) continue;
-                if (P_dense(i, j) <= threshold) continue;
-                size_t jj = static_cast<size_t>(j);
-                if (!visited[jj]) 
-                    {
-                    visited[jj] = 1;
-                    stack.push_back(j);
-                    ++count;
-                    }
+                visited[jj] = 1;
+                stack.push_back(j);
+                ++count;
                 }
             }
         }
@@ -1191,6 +1669,9 @@ size_t MarkovChainAnalyzer::countReachableReverse(Eigen::Index start, double thr
     if (start < 0 || start >= N)
         return 0;
 
+    if (isSparse)
+        return countReachableSparse(start, threshold, true);
+
     std::vector<char> visited(static_cast<size_t>(N), 0);
     std::vector<Eigen::Index> stack;
     stack.reserve(1024);
@@ -1198,47 +1679,20 @@ size_t MarkovChainAnalyzer::countReachableReverse(Eigen::Index start, double thr
     stack.push_back(start);
     size_t count = 1;
 
-    if (isSparse) 
+    while (!stack.empty()) 
         {
-        // The outgoing neighbors of i in the reversed graph are the j with P(j,i) above the threshold:
-        // column i of P. The kernel is stored by rows, but it is reversible, so P(j,i) =
-        // pi_i P(i,j) / pi_j, and row i, whose support is the same, gives the column.
-        while (!stack.empty())
+        Eigen::Index i = stack.back();
+        stack.pop_back();
+        for (Eigen::Index j = 0; j < N; ++j) 
             {
-            Eigen::Index i = stack.back();
-            stack.pop_back();
-            for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it)
+            if (j == i) continue;
+            if (P_dense(j, i) <= threshold) continue;
+            size_t jj = static_cast<size_t>(j);
+            if (!visited[jj]) 
                 {
-                Eigen::Index j = it.col();
-                if (j == i) continue;
-                if (pi(i) * it.value() / pi(j) <= threshold) continue;
-                size_t jj = static_cast<size_t>(j);
-                if (!visited[jj]) 
-                    {
-                    visited[jj] = 1;
-                    stack.push_back(j);
-                    ++count;
-                    }
-                }
-            }
-        }
-    else 
-        {
-        while (!stack.empty()) 
-            {
-            Eigen::Index i = stack.back();
-            stack.pop_back();
-            for (Eigen::Index j = 0; j < N; ++j) 
-                {
-                if (j == i) continue;
-                if (P_dense(j, i) <= threshold) continue;
-                size_t jj = static_cast<size_t>(j);
-                if (!visited[jj]) 
-                    {
-                    visited[jj] = 1;
-                    stack.push_back(j);
-                    ++count;
-                    }
+                visited[jj] = 1;
+                stack.push_back(j);
+                ++count;
                 }
             }
         }
@@ -1427,7 +1881,11 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
     // wide-subspace Lanczos attempts of earlier versions are kept after shift-invert for those. If no
     // attempt converges fully, converged eigenpairs from a partial solve are used, flagged "ok_partial".
     // Whatever their source, the eigenpairs are checked against S itself below.
-    const int    standardTopRestarts = 100;      // ~1,600 kernel products; 5+ minutes at ten-taxon TBR
+    // The plain solve either converges quickly or not at all: on every 9- and 10-taxon kernel tried it
+    // converged within 17 restarts or ran out its budget, which was 100 restarts -- some 40 s on a
+    // 10-taxon NNI kernel and minutes on a TBR one -- before shift-invert was tried. 40 keeps a wide
+    // margin over the slowest success.
+    const int    standardTopRestarts = 40;       // ~640 kernel products
     const double standardTol         = 1e-10;
     int ncvTop = std::min(static_cast<int>(n), std::max(std::max(2 * nev + 1, 20), nev + 2));
     int    ncvUsed   = ncvTop;
@@ -1547,9 +2005,11 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
     // requested. Earlier versions asked for two, and where the bottom of the spectrum is a repeated
     // eigenvalue a single-vector Lanczos solve sees only one copy of it, so the second requested value
     // lay in the continuum above and never converged: a 9-taxon NNI2 kernel ran some 380 s at ncv = 120
-    // without finishing. The error of a Ritz value is quadratic in its residual, so a residual tolerance
-    // of 1e-7 already fixes lambda_min to about 1e-14. Each restart is a full product with the kernel,
-    // ~0.2 s at ten taxa, so the restart budgets are kept small; the subspace is widened if they run out.
+    // without finishing. The solve runs on S + 2I (see ShiftedSymOp), so its tolerance of 1e-7 is in effect
+    // an absolute one on lambda_min rather than one relative to |lambda_min|, which near zero was out of
+    // reach. It starts at ncv = 60: where lambda_min lies in the cluster near zero a 20-vector subspace
+    // spent its 300 restarts without converging before the wider one, which converges in a few dozen,
+    // was tried; elsewhere the wider subspace converges in a handful of restarts.
     //
     // The bottom solve also has its own wall-clock cap, a quarter of the budget. Where lambda_min sits in
     // the dense bulk of the spectrum near zero it converges very slowly: a 10-taxon TBR kernel ran 201
@@ -1563,11 +2023,12 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
                                     std::chrono::duration<double>(0.25 * s_solveBudgetSeconds)));
     bool bottomTimedOut = false;
     struct BottomAttempt { int ncv; int maxit; double tol; };
-    const BottomAttempt bottomAttempts[] = { { std::max(2 * kBot + 1, 20), 300, bottomTol },
-                                             { 60, 300, bottomTol },
+    const BottomAttempt bottomAttempts[] = { { 60, 300, bottomTol },
                                              { 120, 300, bottomTol } };
     std::vector<std::pair<double, Eigen::VectorXd>> botPairs;
     int nconvBot = 0;
+    const double bottomShift = 2.0;
+    ShiftedSymOp sop(op, bottomShift);
     for (const BottomAttempt& attempt : bottomAttempts)
         {
         if (timedOut || bottomTimedOut || !topOK)
@@ -1575,7 +2036,7 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
         int ncvBot = std::min(static_cast<int>(n), std::max(attempt.ncv, kBot + 2));
         try
             {
-            Spectra::SymEigsSolver<Op> eigsBot(op, kBot, ncvBot);
+            Spectra::SymEigsSolver<ShiftedSymOp> eigsBot(sop, kBot, ncvBot);
             nconvBot = computeCapped(eigsBot, Spectra::SortRule::SmallestAlge, attempt.maxit, attempt.tol, "bot",
                                      bottomDeadline, bottomTimedOut);
             if (nconvBot > 0 && eigsBot.info() == Spectra::CompInfo::Successful)
@@ -1587,7 +2048,7 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
                 for (Eigen::Index i = 0; i < vb.size(); ++i)
                     {
                     if (!std::isfinite(vb(i))) { nanBot = true; continue; }
-                    botPairs.push_back({vb(i), Vb.col(i)});
+                    botPairs.push_back({vb(i) - bottomShift, Vb.col(i)});
                     }
                 if (!nanBot)
                     break;
@@ -1784,16 +2245,37 @@ bool MarkovChainAnalyzer::shiftInvertTopModes(int k, const Vector& wUnit, int ma
 
     if (isSparse)
         ensureRowSparse();
-    Vector piSqrt = posteriorSqrt();
     Vector diagP = isSparse ? Vector(P_row_sparse.diagonal()) : Vector(P_dense.diagonal());
     Vector diagonal(N);
     for (Eigen::Index i = 0; i < N; ++i)
         diagonal(i) = std::max(1.0e-12, 1.0 - diagP(i) + wUnit(i) * wUnit(i));
 
+    // A y = (I - S) y + w (w' y), formed in out without a temporary, its vector work threaded on large
+    // kernels (as in conjugateGradient)
+    std::vector<double> partial(64);
+    ThreadPool* pool = (N >= (Eigen::Index(1) << 20)) ? threadPool : nullptr;
     auto applyA = [&](const Vector& y, Vector& out)
         {
-        applySymmetrizedLaplacian(piSqrt, y, out);                // (I - S) y
-        out += wUnit * wUnit.dot(y);                              // + w w' y
+        out.resize(N);
+        applyS(y.data(), out.data());                             // S y
+        const double* yp = y.data();
+        const double* wp = wUnit.data();
+        double*       op = out.data();
+        forRowRanges(pool, N, 64, [&](Eigen::Index lo, Eigen::Index hi, int part)
+            {
+            double acc[4] = { 0.0, 0.0, 0.0, 0.0 };
+            for (Eigen::Index i = lo; i < hi; ++i)
+                acc[i & 3] += wp[i] * yp[i];
+            partial[static_cast<size_t>(part)] = (acc[0] + acc[1]) + (acc[2] + acc[3]);
+            });
+        double wy = 0.0;
+        for (double v : partial)
+            wy += v;
+        forRowRanges(pool, N, 64, [&](Eigen::Index lo, Eigen::Index hi, int)
+            {
+            for (Eigen::Index i = lo; i < hi; ++i)
+                op[i] = (yp[i] - op[i]) + wp[i] * wy;
+            });
         };
 
     long   totalCgIterations = 0;
@@ -1857,6 +2339,55 @@ ThresholdedIrreducibilityInfo MarkovChainAnalyzer::computeThresholdedIrreducibil
     ThresholdedIrreducibilityInfo summary;
     summary.thresholds = thresholds;
     summary.results.reserve(thresholds.size());
+
+    if (isSparse && n > 0)
+        {
+        // One threaded pass gathers the degree summaries for every threshold. The transitions above a
+        // threshold include those above any larger one, so once every state is reachable at some
+        // threshold it is at every smaller one, and the searches there are skipped.
+        std::vector<IrreducibilityInfo> infos(thresholds.size());
+        for (size_t t = 0; t < thresholds.size(); ++t)
+            {
+            infos[t].threshold = thresholds[t];
+            infos[t].num_states = n;
+            infos[t].min_out_degree = std::numeric_limits<size_t>::max();
+            infos[t].max_out_degree = 0;
+            infos[t].min_leave_probability = std::numeric_limits<double>::infinity();
+            }
+        outDegreeStats(thresholds, tinyLeaveProb, infos);
+
+        std::vector<size_t> order(thresholds.size());
+        for (size_t t = 0; t < order.size(); ++t)
+            order[t] = t;
+        std::stable_sort(order.begin(), order.end(),
+                         [&](size_t a, size_t b) { return thresholds[a] > thresholds[b]; });
+        double fullForwardAt = -1.0, fullReverseAt = -1.0;       // a threshold with every state reached
+        for (size_t t : order)
+            {
+            IrreducibilityInfo& info = infos[t];
+            if (info.min_out_degree == std::numeric_limits<size_t>::max())
+                info.min_out_degree = 0;
+            if (!std::isfinite(info.min_leave_probability))
+                info.min_leave_probability = std::numeric_limits<double>::quiet_NaN();
+            double tau = thresholds[t];
+            info.states_reachable_from_0 = (fullForwardAt >= tau) ? n : countReachableForward(0, tau);
+            info.states_that_can_reach_0 = (fullReverseAt >= tau) ? n : countReachableReverse(0, tau);
+            if (info.states_reachable_from_0 == n && fullForwardAt < tau)
+                fullForwardAt = tau;
+            if (info.states_that_can_reach_0 == n && fullReverseAt < tau)
+                fullReverseAt = tau;
+            info.irreducible = (info.states_reachable_from_0 == n && info.states_that_can_reach_0 == n);
+            }
+        for (size_t t = 0; t < thresholds.size(); ++t)
+            {
+            summary.results.push_back(infos[t]);
+            if (thresholds[t] == 0.0)
+                summary.irreducible_at_zero = infos[t].irreducible;
+            if (infos[t].irreducible)
+                summary.largest_threshold_irreducible = thresholds[t];
+            }
+        return summary;
+        }
 
     for (double tau : thresholds)
         {
@@ -2701,59 +3232,204 @@ double MarkovChainAnalyzer::kemenyConstantStochastic(int numProbes, int lanczosS
         std::vector<std::vector<double>> alpha(static_cast<size_t>(nb)), beta(static_cast<size_t>(nb));
         std::vector<double> betaPrev(static_cast<size_t>(nb), 0.0);
 
+        // Each Lanczos step is a handful of sweeps over the rows, each fusing the column operations that
+        // can share it, run in parallel over a fixed partition of the rows with the partial sums combined
+        // in a fixed order. Done column by column with Eigen, as earlier, the step made some hundred
+        // strided passes over the n x 8 blocks on one core -- a third of a second per step at ten taxa,
+        // 200 steps per estimate, more than the products with the kernel themselves on an NNI kernel.
+        const int    parts = 64;
+        const int    d     = static_cast<int>(Q.cols());
+        const double* qp   = Q.data();                            // column-major n x d
+        const size_t  nbs  = static_cast<size_t>(nb);
+        std::vector<double> partial(static_cast<size_t>(parts) * static_cast<size_t>(std::max(d, 1)) * nbs);
+        std::vector<double> coef(static_cast<size_t>(std::max(d, 1)) * nbs);
+        std::vector<double> colA(nbs), colB(nbs);
+
+        // coef = Q^T X (d x nb), from per-part sums
+        auto projectOnQ = [&](const double* X)
+            {
+            std::fill(partial.begin(), partial.end(), 0.0);
+            forRowRanges(threadPool, N, parts, [&](Eigen::Index lo, Eigen::Index hi, int part)
+                {
+                double* acc = partial.data() + static_cast<size_t>(part) * static_cast<size_t>(d) * nbs;
+                for (int j = 0; j < d; ++j)
+                    {
+                    const double* qj = qp + static_cast<size_t>(j) * static_cast<size_t>(N);
+                    double* aj = acc + static_cast<size_t>(j) * nbs;
+                    for (Eigen::Index i = lo; i < hi; ++i)
+                        {
+                        double q = qj[i];
+                        const double* xi = X + i * nb;
+                        for (int c = 0; c < nb; ++c)
+                            aj[c] += q * xi[c];
+                        }
+                    }
+                });
+            std::fill(coef.begin(), coef.end(), 0.0);
+            for (int part = 0; part < parts; ++part)
+                for (size_t t = 0; t < static_cast<size_t>(d) * nbs; ++t)
+                    coef[t] += partial[static_cast<size_t>(part) * static_cast<size_t>(d) * nbs + t];
+            };
+
+        // X -= Q coef, then out[c] = sum_i f(X_ic, Y_ic) over the updated rows (Y may be null)
+        auto subtractQ = [&](double* X, const double* Y, bool squares, std::vector<double>& out)
+            {
+            std::fill(partial.begin(), partial.end(), 0.0);
+            forRowRanges(threadPool, N, parts, [&](Eigen::Index lo, Eigen::Index hi, int part)
+                {
+                double* acc = partial.data() + static_cast<size_t>(part) * nbs;
+                for (Eigen::Index i = lo; i < hi; ++i)
+                    {
+                    double* xi = X + i * nb;
+                    for (int j = 0; j < d; ++j)
+                        {
+                        double q = qp[static_cast<size_t>(j) * static_cast<size_t>(N) + i];
+                        const double* cj = coef.data() + static_cast<size_t>(j) * nbs;
+                        for (int c = 0; c < nb; ++c)
+                            xi[c] -= q * cj[c];
+                        }
+                    const double* yi = (Y != nullptr) ? Y + i * nb : xi;
+                    for (int c = 0; c < nb; ++c)
+                        acc[c] += squares ? xi[c] * xi[c] : yi[c] * xi[c];
+                    }
+                });
+            std::fill(out.begin(), out.end(), 0.0);
+            for (int part = 0; part < parts; ++part)
+                for (size_t c = 0; c < nbs; ++c)
+                    out[c] += partial[static_cast<size_t>(part) * nbs + c];
+            };
+
+        // R[:,c] -= s[c] * V[:,c] for active c, then out[c] = sum_i W_ic R_ic (W null: R_ic^2)
+        auto axpyThenDot = [&](double* Rp, const double* V, const std::vector<double>& sc,
+                               const double* W, std::vector<double>& out)
+            {
+            std::fill(partial.begin(), partial.end(), 0.0);
+            forRowRanges(threadPool, N, parts, [&](Eigen::Index lo, Eigen::Index hi, int part)
+                {
+                double* acc = partial.data() + static_cast<size_t>(part) * nbs;
+                for (Eigen::Index i = lo; i < hi; ++i)
+                    {
+                    double* ri = Rp + i * nb;
+                    const double* vi = V + i * nb;
+                    const double* wi = (W != nullptr) ? W + i * nb : ri;
+                    for (int c = 0; c < nb; ++c)
+                        {
+                        if (active[static_cast<size_t>(c)])
+                            ri[c] -= sc[static_cast<size_t>(c)] * vi[c];
+                        acc[c] += wi[c] * ri[c];
+                        }
+                    }
+                });
+            std::fill(out.begin(), out.end(), 0.0);
+            for (int part = 0; part < parts; ++part)
+                for (size_t c = 0; c < nbs; ++c)
+                    out[c] += partial[static_cast<size_t>(part) * nbs + c];
+            };
+
+        double* qc = Qcur.data();
+        double* qv = Qprev.data();
+        double* sq = SQ.data();
+        double* rp = R.data();
+
         for (int k = 0; k < m; ++k)
             {
-            deflate(Qcur);
+            // deflate the current vectors and normalize them; retired columns are zeroed
+            projectOnQ(qc);
+            subtractQ(qc, nullptr, true, colA);                   // colA = squared column norms
             bool anyActive = false;
             for (int c = 0; c < nb; ++c)
                 {
-                if (!active[static_cast<size_t>(c)])
-                    {
-                    Qcur.col(c).setZero();
+                size_t cc = static_cast<size_t>(c);
+                colB[cc] = 0.0;                                   // 0: zero the column
+                if (!active[cc])
                     continue;
-                    }
-                double qn = Qcur.col(c).norm();
+                double qn = std::sqrt(colA[cc]);
                 if (qn <= 1e-14)
                     {
-                    active[static_cast<size_t>(c)] = 0;
-                    Qcur.col(c).setZero();
+                    active[cc] = 0;
                     continue;
                     }
-                Qcur.col(c) /= qn;
+                colB[cc] = qn;
                 anyActive = true;
                 }
             if (!anyActive)
                 break;
-
-            applySBlock(Qcur.data(), SQ.data(), nb);
-            R = Qcur - SQ;                                        // M q = (I - S) q
-            for (int c = 0; c < nb; ++c)
+            forRowRanges(threadPool, N, parts, [&](Eigen::Index lo, Eigen::Index hi, int)
                 {
-                if (!active[static_cast<size_t>(c)])
-                    continue;
-                double a = Qcur.col(c).dot(R.col(c));
-                alpha[static_cast<size_t>(c)].push_back(a);
-                R.col(c) -= a * Qcur.col(c) + betaPrev[static_cast<size_t>(c)] * Qprev.col(c);
-                }
-            deflate(R);
+                for (Eigen::Index i = lo; i < hi; ++i)
+                    for (int c = 0; c < nb; ++c)
+                        qc[i * nb + c] = (colB[static_cast<size_t>(c)] > 0.0) ? qc[i * nb + c] / colB[static_cast<size_t>(c)] : 0.0;
+                });
+
+            applySBlock(qc, sq, nb);
+
+            // R = (I - S) q, alpha = q . R
+            std::fill(partial.begin(), partial.end(), 0.0);
+            forRowRanges(threadPool, N, parts, [&](Eigen::Index lo, Eigen::Index hi, int part)
+                {
+                double* acc = partial.data() + static_cast<size_t>(part) * nbs;
+                for (Eigen::Index i = lo; i < hi; ++i)
+                    for (int c = 0; c < nb; ++c)
+                        {
+                        double r = qc[i * nb + c] - sq[i * nb + c];
+                        rp[i * nb + c] = r;
+                        acc[c] += qc[i * nb + c] * r;
+                        }
+                });
+            std::fill(colA.begin(), colA.end(), 0.0);
+            for (int part = 0; part < parts; ++part)
+                for (size_t c = 0; c < nbs; ++c)
+                    colA[c] += partial[static_cast<size_t>(part) * nbs + c];
+            for (int c = 0; c < nb; ++c)
+                if (active[static_cast<size_t>(c)])
+                    alpha[static_cast<size_t>(c)].push_back(colA[static_cast<size_t>(c)]);
+
+            // R -= alpha q + beta_prev q_prev, and project R on the deflated directions
+            forRowRanges(threadPool, N, parts, [&](Eigen::Index lo, Eigen::Index hi, int)
+                {
+                for (Eigen::Index i = lo; i < hi; ++i)
+                    for (int c = 0; c < nb; ++c)
+                        if (active[static_cast<size_t>(c)])
+                            rp[i * nb + c] -= colA[static_cast<size_t>(c)] * qc[i * nb + c] +
+                                              betaPrev[static_cast<size_t>(c)] * qv[i * nb + c];
+                });
+            projectOnQ(rp);
+            subtractQ(rp, qc, false, colA);                       // deflate R; colA = q . R
+
+            // local reorthogonalization against q and q_prev, then beta = |R|
+            axpyThenDot(rp, qc, colA, qv, colB);                  // R -= (q.R) q;  colB = q_prev . R
+            std::vector<double> bsq(nbs);
+            axpyThenDot(rp, qv, colB, nullptr, bsq);              // R -= (q_prev.R) q_prev;  bsq = |R|^2
+
             for (int c = 0; c < nb; ++c)
                 {
                 size_t cc = static_cast<size_t>(c);
+                colB[cc] = 0.0;                                   // 0: leave the column as it is
                 if (!active[cc])
                     continue;
-                R.col(c) -= Qcur.col(c).dot(R.col(c)) * Qcur.col(c);   // local reorthogonalization
-                R.col(c) -= Qprev.col(c).dot(R.col(c)) * Qprev.col(c);
-                double b = R.col(c).norm();
+                double b = std::sqrt(bsq[cc]);
                 if (b <= 1e-14 || k == m - 1)
                     {
                     active[cc] = 0;
                     continue;
                     }
                 beta[cc].push_back(b);
-                Qprev.col(c) = Qcur.col(c);
                 betaPrev[cc] = b;
-                Qcur.col(c) = R.col(c) / b;
+                colB[cc] = b;
                 }
+            forRowRanges(threadPool, N, parts, [&](Eigen::Index lo, Eigen::Index hi, int)
+                {
+                for (Eigen::Index i = lo; i < hi; ++i)
+                    for (int c = 0; c < nb; ++c)
+                        {
+                        double b = colB[static_cast<size_t>(c)];
+                        if (b > 0.0)
+                            {
+                            qv[i * nb + c] = qc[i * nb + c];
+                            qc[i * nb + c] = rp[i * nb + c] / b;
+                            }
+                        }
+                });
             }
 
         for (int c = 0; c < nb; ++c)

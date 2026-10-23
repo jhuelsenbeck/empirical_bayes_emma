@@ -8,6 +8,7 @@
 #include "TreeCache.hpp"
 
 typedef std::unordered_map<uint64_t, int> TreeCountMap;
+class ThreadPool;
 
 
 class TreeSamples {
@@ -16,7 +17,7 @@ class TreeSamples {
                                         TreeSamples(void) = delete;
                                         TreeSamples(TreeCache* tc);
         void                            clear(void);
-        static void                     compareSamples(std::vector<TreeSamples*>& sampleVec);
+        static void                     compareSamples(std::vector<TreeSamples*>& sampleVec, ThreadPool* threadPool = nullptr);
         size_t                          getNumSamples(void) const { return (size_t)numSamples; }
         const TreeCountMap&             getTreeCounts(void) const { return treeCounts; }
         double                          getTreeProbability(uint64_t treeHash) const;

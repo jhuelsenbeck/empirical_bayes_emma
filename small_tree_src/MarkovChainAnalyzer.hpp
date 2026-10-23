@@ -275,6 +275,9 @@ class MarkovChainAnalyzer {
         double                          meanHittingTimeToSetQuiet(const std::vector<Eigen::Index>& targets) const;
         size_t                          countReachableForward(Eigen::Index start, double threshold) const;
         size_t                          countReachableReverse(Eigen::Index start, double threshold) const;
+        size_t                          countReachableSparse(Eigen::Index start, double threshold, bool reverse) const;
+        void                            outDegreeStats(const std::vector<double>& thresholds, double tinyLeaveProb,
+                                                       std::vector<IrreducibilityInfo>& infos) const;
         static void                     finalizeSpectralInfo(SpectralInfo& info);
         static void                     finalizeSpectralReal(SpectralInfo& info);
         SparseMatrix                    symmetrizedSparse(void) const;
@@ -308,6 +311,15 @@ class MarkovChainAnalyzer {
         mutable bool                    warnedZeroPosterior = false;
         void                            buildAcceleratedOperator(void) const;
         mutable Vector                  piSqrtCached;
+        mutable Vector                  applyScratch;                   // D^{-1/2} x, reused by every applyS
+        bool                            ensurePermuted(void) const;
+        static constexpr size_t         permMinStates = 262144;         // smaller kernels fit in cache as they are
+        mutable int                     permState = 0;                  // 0 unbuilt, 1 built, -1 not used
+        mutable std::vector<int>        permOrder;                      // locality order: position -> state
+        mutable std::vector<int>        permOuter;                      // the kernel's rows in that order
+        mutable std::vector<int>        permInner;
+        mutable std::vector<double>     permValues;
+        mutable std::vector<double>     permSqrtPi;                     // sqrt(pi) in that order
         mutable bool                    piSqrtReady = false;
         mutable bool                    supportWasRestricted = false;   // true once buildFromCache dropped underflowed states
         //mutable void*                   accelHandle = nullptr;    // SparseMatrix_Double* (Apple) or null

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include "Msg.hpp"
+#include "Threads.hpp"
 #include "TreeSamples.hpp"
 
 
@@ -18,7 +19,40 @@ void TreeSamples::clear(void) {
     numSamples = 0;
 }
 
-void TreeSamples::compareSamples(std::vector<TreeSamples*>& sampleVec) {
+// The indicator ESS and first hit of one (tree, chain) cell of the comparison table. The cells are
+// independent, and at a million samples per chain each is a scan of the whole trace, so they are
+// spread over the thread pool when there is one.
+namespace {
+
+class IndicatorCellTask : public ThreadTask {
+
+    public:
+                                IndicatorCellTask(const std::vector<uint64_t>* t, uint64_t h, double* e, int* f,
+                                                  double (*fn)(const std::vector<uint64_t>&, uint64_t)) :
+                                    trace(t), target(h), ess(e), firstHit(f), essFn(fn) {}
+        void                    run(void) override {
+                                    *ess = essFn(*trace, target);
+                                    for (size_t t=0; t<trace->size(); t++)
+                                        {
+                                        if ((*trace)[t] == target)
+                                            {
+                                            *firstHit = (int)(t + 1);
+                                            break;
+                                            }
+                                        }
+                                }
+
+    private:
+        const std::vector<uint64_t>* trace;
+        uint64_t                target;
+        double*                 ess;
+        int*                    firstHit;
+        double                  (*essFn)(const std::vector<uint64_t>&, uint64_t);
+};
+
+}
+
+void TreeSamples::compareSamples(std::vector<TreeSamples*>& sampleVec, ThreadPool* threadPool) {
 
     size_t numChains = sampleVec.size();
     if (numChains < 2)
@@ -69,18 +103,24 @@ void TreeSamples::compareSamples(std::vector<TreeSamples*>& sampleVec) {
             if (it != sampleVec[c]->treeCounts.end())
                 chainProb[r][c] = (double)it->second / sampleVec[c]->numSamples;
 
-            chainESS[r][c] = computeIndicatorESS(sampleVec[c]->trees, h);
-
-            const std::vector<uint64_t>& trace = sampleVec[c]->trees;
-            for (size_t t=0; t<trace.size(); t++)
-                {
-                if (trace[t] == h)
-                    {
-                    chainHit[r][c] = (int)(t + 1);
-                    break;
-                    }
-                }
             }
+        }
+
+    std::vector<IndicatorCellTask> cells;
+    cells.reserve(topK * numChains);
+    for (size_t r=0; r<topK; r++)
+        for (size_t c=0; c<numChains; c++)
+            cells.emplace_back(&sampleVec[c]->trees, ranked[r].first, &chainESS[r][c], &chainHit[r][c], &computeIndicatorESS);
+    if (threadPool == nullptr)
+        {
+        for (IndicatorCellTask& t : cells)
+            t.run();
+        }
+    else
+        {
+        for (IndicatorCellTask& t : cells)
+            threadPool->pushTask(&t);
+        threadPool->wait();
         }
 
     std::cout << "   Cross-chain tree sample diagnostics (cycle " << numCycles << ")\n";
@@ -170,18 +210,42 @@ void TreeSamples::compareSamples(std::vector<TreeSamples*>& sampleVec) {
     std::cout << "\n";
 }
 
+// ESS of the 0/1 trace x_t = 1[T_t == target], from the initial positive sequence of its
+// autocorrelations up to lag min(N/4, 2048). The lag-k autocovariance sum
+//     sum_{i<N-k} (x_i - m)(x_{i+k} - m) = C_k - m (A_k + B_k) + (N - k) m^2,
+// with C_k = #{i : x_i = x_{i+k} = 1}, A_k the hits in [0, N-k) and B_k those in [k, N), is formed
+// from integer counts rather than by summing N products: C_k is a popcount over the trace packed 64
+// samples to a word, or, for a rarely visited tree, a walk over its hit positions. At a million
+// samples this is what made the comparison table take as long as the chains themselves.
 double TreeSamples::computeIndicatorESS(const std::vector<uint64_t>& trace, uint64_t target) {
 
     size_t N = trace.size();
     if (N < 2)
         return (double)N;
 
+    size_t W = (N + 63) / 64;
+    std::vector<uint64_t> bits(W + 1, 0);                    // one zero word of padding for the shifts
+    std::vector<uint32_t> hitPos;
     size_t hits = 0;
-    for (uint64_t h : trace)
-        if (h == target)
+    for (size_t i=0; i<N; i++)
+        {
+        if (trace[i] == target)
+            {
+            bits[i >> 6] |= (uint64_t)1 << (i & 63);
             hits++;
+            }
+        }
     if (hits == 0 || hits == N)
         return (double)N;
+
+    bool sparse = hits < W;
+    if (sparse == true)
+        {
+        hitPos.reserve(hits);
+        for (size_t i=0; i<N; i++)
+            if (trace[i] == target)
+                hitPos.push_back((uint32_t)i);
+        }
 
     double mean = (double)hits / N;
     double var  = mean * (1.0 - mean);
@@ -190,16 +254,40 @@ double TreeSamples::computeIndicatorESS(const std::vector<uint64_t>& trace, uint
     if (maxLag > 2048)
         maxLag = 2048;
 
+    size_t A = hits, B = hits;
     double tauSum = 1.0;
     for (size_t k=1; k<=maxLag; k++)
         {
-        double gamma = 0.0;
-        for (size_t i=0; i+k<N; i++)
+        A -= (bits[(N - k) >> 6] >> ((N - k) & 63)) & 1;     // x_{N-k} leaves [0, N-k)
+        B -= (bits[(k - 1) >> 6] >> ((k - 1) & 63)) & 1;     // x_{k-1} leaves [k, N)
+
+        uint64_t C = 0;
+        if (sparse == true)
             {
-            double xi  = (trace[i]   == target) ? 1.0 : 0.0;
-            double xik = (trace[i+k] == target) ? 1.0 : 0.0;
-            gamma += (xi - mean) * (xik - mean);
+            for (uint32_t p : hitPos)
+                {
+                size_t j = (size_t)p + k;
+                if (j >= N)
+                    break;
+                C += (bits[j >> 6] >> (j & 63)) & 1;
+                }
             }
+        else
+            {
+            size_t q = k >> 6, sh = k & 63;
+            if (sh == 0)
+                {
+                for (size_t i=0; i+q<W; i++)
+                    C += (uint64_t)__builtin_popcountll(bits[i] & bits[i + q]);
+                }
+            else
+                {
+                for (size_t i=0; i+q<W; i++)
+                    C += (uint64_t)__builtin_popcountll(bits[i] & ((bits[i + q] >> sh) | (bits[i + q + 1] << (64 - sh))));
+                }
+            }
+
+        double gamma = (double)C - mean * (double)(A + B) + (double)(N - k) * mean * mean;
         gamma /= (double)N;
         double rho = gamma / var;
 

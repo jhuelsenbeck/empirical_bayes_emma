@@ -65,13 +65,78 @@ void TreeConvergenceDiagnostics::writeStatsHeader(std::ostream& os, size_t numRe
         os << "\tmapFirstHitCycle_rep" << i+1;
 }
 
-void TreeConvergenceDiagnostics::writeStatsLine(std::ostream& os, const std::vector<TreeSamples*>& sampleVec) const {
+// Advance one chain's running totals over the samples it has drawn since the last call. In sample
+// order, as computeChainStats() scans: a tree's posterior joins the discovered mass when it is first
+// seen, tau95 is the sample at which that mass first reaches 0.95, and every sample adds its tree's
+// posterior to sumP. The discovered masses are therefore summed in discovery order, where
+// computeChainStats() summed them in hash-map order; the totals agree to rounding.
+void TreeConvergenceDiagnostics::advance(ChainCursor& cur, const TreeSamples* samples) {
+
+    const std::vector<uint64_t>& trace = samples->getTrees();
+    uint64_t mapHash = posteriorRank.empty() ? 0 : posteriorRank[0]->hash;
+    for (size_t i = cur.processed; i < trace.size(); i++)
+        {
+        uint64_t h = trace[i];
+        if (cur.lastInfo == nullptr || h != cur.lastHash)
+            {
+            cur.lastInfo = treeCache->getTreeInfo(h);
+            cur.lastHash = h;
+            if (cur.lastInfo == nullptr)
+                Msg::error("Sampled tree not found in TreeCache");
+            }
+        double p = cur.lastInfo->posteriorProbability;
+
+        if (cur.visited.empty() == true)
+            cur.visited.assign(treeCache->size(), 0);
+        unsigned char& seen = cur.visited[cur.lastInfo->index];
+        if (seen == 0)
+            {
+            seen = 1;
+            cur.discoveredMass += p;
+            if (inCredibleSet95.find(h) != inCredibleSet95.end())
+                cur.credible95MassDiscovered += p;
+            }
+        if (cur.tau95WasReached == false && cur.discoveredMass >= 0.95)
+            {
+            cur.tau95WasReached = true;
+            cur.tau95 = (double)(i + 1);
+            }
+        if (cur.mapFirstHitCycle < 0 && h == mapHash && posteriorRank.empty() == false)
+            cur.mapFirstHitCycle = (int)(i + 1);
+        cur.sumP += p;
+        }
+    cur.processed = trace.size();
+}
+
+void TreeConvergenceDiagnostics::writeStatsLine(std::ostream& os, const std::vector<TreeSamples*>& sampleVec) {
+
+    if (cursors.size() != sampleVec.size())
+        cursors.assign(sampleVec.size(), ChainCursor());
 
     std::vector<ChainStats> stats;
     stats.reserve(sampleVec.size());
 
-    for (TreeSamples* s : sampleVec)
-        stats.push_back(computeChainStats(s));
+    for (size_t c = 0; c < sampleVec.size(); c++)
+        {
+        const TreeSamples* s = sampleVec[c];
+        ChainStats st;
+        if (s != nullptr && s->getNumSamples() > 0)
+            {
+            ChainCursor& cur = cursors[c];
+            advance(cur, s);
+            st.numSamples = s->getNumSamples();
+            st.discoveredMass = cur.discoveredMass;
+            st.undiscoveredMass = 1.0 - cur.discoveredMass;
+            if (st.undiscoveredMass < 0.0 && st.undiscoveredMass > -1.0e-12)
+                st.undiscoveredMass = 0.0;
+            st.credible95MassDiscovered = cur.credible95MassDiscovered;
+            st.tau95WasReached = cur.tau95WasReached;
+            st.tau95 = cur.tau95;
+            st.mapFirstHitCycle = cur.mapFirstHitCycle;
+            st.meanTruePosteriorProbability = cur.sumP / (double)st.numSamples;
+            }
+        stats.push_back(st);
+        }
 
     std::vector<double> discoveredMass;
     std::vector<double> undiscoveredMass;
