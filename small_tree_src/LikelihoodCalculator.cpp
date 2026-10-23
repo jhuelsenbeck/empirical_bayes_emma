@@ -119,14 +119,24 @@ double LikelihoodCalculator::iterateBranch(Node* p) {
                 }
             }
                  
-        // propose a step using Newton when possible
-        double step = 0.0;
+        // Propose the next branch length. Newton where the log-likelihood is locally concave; otherwise an
+        // uphill step. Either way the multiplicative change in v is capped (|delta log v| <= 2, matching the
+        // cap in mapRefineBranchStep) so no single iteration can leap across the admissible range. The old
+        // fallback, 0.01 * firstDerivative, was unscaled -- the derivative grows with the number of sites --
+        // and routinely slammed into maxBrlen, setting off the oscillation that best-point tracking then hid.
+        // Near the maximum the Newton step is small and the cap never binds, so quadratic convergence is kept.
+        const double maxLogStep = 2.0;
+        const double maxFactor  = std::exp(maxLogStep);
+        double vNew;
         if (std::abs(secondDerivative) >= 1e-12 && secondDerivative < 0.0)
-            step = - firstDerivative / secondDerivative;
+            vNew = oldV - firstDerivative / secondDerivative;                       // Newton
         else
-            step = 0.01 * firstDerivative; // fallback small gradient step
-            
-        v = oldV + step;
+            vNew = (firstDerivative > 0.0) ? oldV * maxFactor : oldV / maxFactor;   // bounded uphill step
+        if (vNew > oldV * maxFactor)                                                // cap the leap (also
+            vNew = oldV * maxFactor;                                                // keeps v positive if
+        if (vNew < oldV / maxFactor)                                                // Newton overshoots
+            vNew = oldV / maxFactor;                                                // below zero)
+        v = vNew;
         if (v < minBrlen)
             v = minBrlen;
         if (v > maxBrlen)
@@ -147,7 +157,11 @@ double LikelihoodCalculator::iterateBranch(Node* p) {
     p->setBrlen(bestBrlen);
     tMat.setBrlen(bestBrlen);
     
-    return lnL;
+    // Return the likelihood at bestBrlen -- the value the branch was just set to -- not lnL, which is
+    // the likelihood at the last point Newton happened to evaluate. The two coincide only when the final
+    // iterate was also the best; when the iteration oscillates or hits the cap they differ, and the
+    // caller's convergence test then sees a value inconsistent with the tree it is testing.
+    return bestLnL;
 }
 
 double LikelihoodCalculator::lnLikelihood(void) {
@@ -291,6 +305,13 @@ void LikelihoodCalculator::collectBranchNodes(std::vector<Node*>& order) {
 }
 
 void LikelihoodCalculator::refreshAllConditionalLikelihoods(const std::vector<Node*>& order) {
+
+    // The conditional-likelihood updates read the cached transition matrices (tiProbs), not the nodes'
+    // branch lengths, so the two must agree before any CL is rebuilt. The finite-difference Hessian
+    // perturbs a node's branch length directly; without this sync that perturbation never reaches the
+    // CLs of the other branches and the inter-branch (off-diagonal) curvature is lost.
+    for (Node* nde : order)
+        tiProbs[nde->getIndex()].setBrlen(nde->getBrlen());
 
     tree->markUpClsAsDirty();
     tree->markDnClsAsDirty();
@@ -446,7 +467,7 @@ double LikelihoodCalculator::lnMarginalLikelihood(void) {
     // 3. Build the theta-space Hessian and take (1/2) log det(-H). The full (finite-difference) Hessian
     //    can be indefinite for a tree whose mode sits against a near-zero branch, where the Gaussian
     //    curvature degenerates; when its Cholesky fails we fall back to the diagonal Laplace, whose
-    //    -H_ee = 1 - ell''_e b*_e^2 is positive by construction, so every tree gets a finite marginal.
+    //    -H_ee = -ell''_e b*_e^2 - (ell'_e - lambda) b*_e is used directly, so every tree gets a finite marginal.
     double halfLogDet = 0.0;
     bool haveFull = false;
 
@@ -481,7 +502,10 @@ double LikelihoodCalculator::lnMarginalLikelihood(void) {
             secondDerivative.setBrlen(v);
             double d1 = 0.0, d2 = 0.0;
             calculateLFS(condLikes[idx]->beginUp(), condLikes[idx]->beginDn(), tiProbs[idx], firstDerivative, secondDerivative, d1, d2);
-            double curv = 1.0 - d2 * v * v;
+            // -H_ee in theta space is -ell''_e b^2 - (ell'_e - lambda) b. The shortcut 1 - ell'' b^2 is
+            // only equal to this where the gradient vanishes, (ell'-lambda) b = -1; it is wrong at a branch
+            // clamped to minBrlen/maxBrlen -- exactly the case this fallback is invoked for.
+            double curv = -(d2 * v * v + (d1 - lambda) * v);
             if (curv < 1.0e-12) curv = 1.0e-12;
             halfLogDet += 0.5 * std::log(curv);
             }

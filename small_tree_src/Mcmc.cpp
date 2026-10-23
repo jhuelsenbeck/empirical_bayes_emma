@@ -113,29 +113,31 @@ TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbabilit
     if (currentInfo == nullptr)
         Msg::error("Current tree is null in Mcmc::chooseTreeInfo");
 
-    std::vector<TreeInfo*>& neighbors = currentInfo->neighbors;
-    std::vector<double>& probs = currentInfo->neighborProposalProbabilities;
+    NeighborList neighbors = treeCache->neighbors(currentInfo);
 
     if (neighbors.empty() == true)
         Msg::error("Current tree has no neighbors");
-    if (neighbors.size() != probs.size())
-        Msg::error("Neighbor vector and proposal probability vector differ in size");
+    if (treeCache->hasNeighborProposalProbabilities() == false)
+        Msg::error("Proposal probabilities have not been cached");
 
+    // The proposal probabilities are formed as the scan reaches them. The neighbors are sorted by
+    // likelihood, so for any positive power the scan usually stops within the first few.
     double u = rng->uniformRv();
     double sum = 0.0;
-    for (size_t i=0; i<probs.size(); i++)
+    for (uint32_t i=0; i<neighbors.size(); i++)
         {
-        sum += probs[i];
+        double q = treeCache->neighborProposalProbability(currentInfo, neighbors[i]);
+        sum += q;
         if (u < sum)
             {
-            proposalProbability = probs[i];
+            proposalProbability = q;
             return neighbors[i];
             }
         }
 
     // Numerical roundoff can leave sum infinitesimally below one. Fall back to
     // the last neighbor instead of returning null.
-    proposalProbability = probs.back();
+    proposalProbability = treeCache->neighborProposalProbability(currentInfo, neighbors.back());
     return neighbors.back();
 }
 
@@ -147,7 +149,7 @@ TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbabilit
     if (n == 0)
         return chooseTreeInfo(currentInfo, proposalProbability);
 
-    std::vector<TreeInfo*>& neighbors = currentInfo->neighbors;
+    NeighborList neighbors = treeCache->neighbors(currentInfo);
 
     if (neighbors.empty() == true)
         Msg::error("Current tree has no neighbors");
@@ -172,9 +174,10 @@ TreeInfo* Mcmc::chooseTreeInfo(TreeInfo* currentInfo, double& proposalProbabilit
     for (size_t i=0; i<subsetIndices.size(); i++)
         {
         TreeInfo* nbr = neighbors[subsetIndices[i]];
-        if (nbr->neighbors.empty() == true)
+        uint32_t nbrDegree = treeCache->neighbors(nbr).size();
+        if (nbrDegree == 0)
             Msg::error("Neighbor has no neighbors; cannot form multiple-try weight");
-        double w = std::exp((nbr->lnLikelihood - refLnL) * power) / (double)nbr->neighbors.size();
+        double w = std::exp((nbr->lnLikelihood - refLnL) * power) / (double)nbrDegree;
         weights[i] = w;
         totalWeight += w;
         }
@@ -202,16 +205,12 @@ double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash) {
     if (fromInfo == nullptr)
         Msg::error("Null source tree in Mcmc::findTreeProbability");
 
-    std::vector<TreeInfo*>& neighbors = fromInfo->neighbors;
-    std::vector<double>& probs = fromInfo->neighborProposalProbabilities;
+    NeighborList neighbors = treeCache->neighbors(fromInfo);
 
-    if (neighbors.size() != probs.size())
-        Msg::error("Neighbor vector and proposal probability vector differ in size");
-
-    for (size_t i=0; i<neighbors.size(); i++)
+    for (uint32_t i=0; i<neighbors.size(); i++)
         {
         if (neighbors[i]->hash == toHash)
-            return probs[i];
+            return treeCache->neighborProposalProbability(fromInfo, neighbors[i]);
         }
 
     std::cout << "neighbors.size()=" << neighbors.size() << std::endl;
@@ -227,14 +226,14 @@ double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash, int n, dou
     if (n == 0)
         return findTreeProbability(fromInfo, toHash);
 
-    std::vector<TreeInfo*>& neighbors = fromInfo->neighbors;
+    NeighborList neighbors = treeCache->neighbors(fromInfo);
 
     if (n > (int)neighbors.size())
         n = (int)neighbors.size();
 
     // locate the destination x among Y's neighbors; it is forced in as x_k* = x
     int toIdx = -1;
-    for (size_t i=0; i<neighbors.size(); i++)
+    for (uint32_t i=0; i<neighbors.size(); i++)
         {
         if (neighbors[i]->hash == toHash)
             {
@@ -258,9 +257,10 @@ double Mcmc::findTreeProbability(TreeInfo* fromInfo, uint64_t toHash, int n, dou
     for (const int& idx : subsetIndices)
         {
         TreeInfo* nbr = neighbors[idx];
-        if (nbr->neighbors.empty() == true)
+        uint32_t nbrDegree = treeCache->neighbors(nbr).size();
+        if (nbrDegree == 0)
             Msg::error("Neighbor has no neighbors; cannot form multiple-try weight");
-        totalWeight += std::exp((nbr->lnLikelihood - refLnL) * power) / (double)nbr->neighbors.size();
+        totalWeight += std::exp((nbr->lnLikelihood - refLnL) * power) / (double)nbrDegree;
         }
 
     // return the reverse multiple-try weight sum (not a single selection prob)

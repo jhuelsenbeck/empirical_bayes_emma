@@ -7,31 +7,45 @@
 
 
 
-TreeNeighbors::TreeNeighbors(TreeCache* tc, TreeNeighborGenerator* ng, int nt) : 
+TreeNeighbors::TreeNeighbors(TreeCache* tc, TreeNeighborGenerator* ng, int nt) :
     treeCache(tc), neighborGenerator(ng), numTaxa(nt) {
 
 }
 
-std::vector<TreeInfo*>& TreeNeighbors::neighbors(uint64_t treeHash) {
+NeighborList TreeNeighbors::neighbors(uint64_t treeHash) {
 
-    TreeCacheMap& tCache = treeCache->getCache();
-    TreeCacheMap::iterator it = tCache.find(treeHash);
-    if (it == tCache.end())
+    TreeInfo* info = treeCache->getTreeInfo(treeHash);
+    if (info == nullptr)
         Msg::error("Could not find tree hash in cache");
+    return neighbors(info);
+}
 
-    Tree* t = new Tree(it->second->compactTree, numTaxa);
-    std::vector<TreeInfo*>& nbrs = neighbors(t);
+NeighborList TreeNeighbors::neighbors(TreeInfo* info) {
+
+    if (treeCache->hasNeighbors(info) == true)
+        return treeCache->neighbors(info);
+
+    // The Tree objects are released once the likelihoods and the MAP-tree partitions are done, so a
+    // neighborhood generated later (TBR is generated only when it is analyzed) rebuilds the tree from
+    // its compact encoding for the duration of the call.
+    if (info->tree != nullptr)
+        return neighbors(info->tree);
+    Tree* t = new Tree(info->compactTree, numTaxa);
+    NeighborList nbrs = neighbors(t);
     delete t;
-
     return nbrs;
 }
 
-std::vector<TreeInfo*>& TreeNeighbors::neighbors(Tree* t) {
+NeighborList TreeNeighbors::neighbors(Tree* t) {
 
     TreeInfo* tInfo = treeCache->getOrCreateTreeInfo(t);
-    if (tInfo->neighbors.size() == 0)
-        neighborGenerator->generateNeighbors(t, tInfo->neighbors);
-    return tInfo->neighbors;
+    if (treeCache->hasNeighbors(tInfo) == false)
+        {
+        scratch.clear();
+        neighborGenerator->generateNeighbors(t, scratch);
+        treeCache->setNeighbors(tInfo, scratch);
+        }
+    return treeCache->neighbors(tInfo);
 }
 
 void TreeNeighbors::print(void) {
@@ -41,8 +55,8 @@ void TreeNeighbors::print(void) {
     for (auto& [key,val] : tCache)
         {
         std::cout << std::setw(6) << ++i << " " << std::setw(20) << key << " -- ";
-        for (size_t i=0; i<val->neighbors.size(); i++)
-            std::cout << val->neighbors[i] << " ";
+        for (TreeInfo* nb : treeCache->neighbors(val))
+            std::cout << nb << " ";
         std::cout << std::endl;
         }
 }

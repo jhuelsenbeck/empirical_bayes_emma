@@ -14,6 +14,27 @@
 #else
     #define MCA_USE_ACCELERATE 0
 #endif
+
+// Dense LAPACK. The full eigensystem of the symmetrized kernel is an O(n^3) calculation that Eigen's
+// SelfAdjointEigenSolver performs on a single core: 661 s at n = 10395, the 8-taxon state space.
+// Accelerate's divide-and-conquer dsyevd is multithreaded and about ten times faster. The legacy
+// Fortran symbols are declared here directly, so the Accelerate umbrella header (whose BLAS
+// declarations collided on a beta SDK, hence NO_ACCELERATE) is not needed. Build with -DNO_LAPACK to
+// use Eigen instead, as on a machine without Accelerate.
+#if defined(__APPLE__) && !defined(NO_LAPACK)
+    #define MCA_USE_LAPACK 1
+    #if !MCA_USE_ACCELERATE
+    extern "C" {
+        void dsyevd_(const char* jobz, const char* uplo, const int* n, double* a, const int* lda, double* w,
+                     double* work, const int* lwork, int* iwork, const int* liwork, int* info);
+        void dgemm_(const char* transa, const char* transb, const int* m, const int* n, const int* k,
+                    const double* alpha, const double* a, const int* lda, const double* b, const int* ldb,
+                    const double* beta, double* c, const int* ldc);
+    }
+    #endif
+#else
+    #define MCA_USE_LAPACK 0
+#endif
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -59,9 +80,9 @@ MarkovChainAnalyzer::MarkovChainAnalyzer(ThreadPool* tp, TreeCache* cache, std::
 }
 
 MarkovChainAnalyzer::MarkovChainAnalyzer(ThreadPool* tp, const SparseMatrix& P, const Vector& pi)
-    : threadPool(tp), P_sparse(P), pi(pi), n(P.rows()), isSparse(true) {
+    : threadPool(tp), P_row_sparse(P), pi(pi), n(P.rows()), isSparse(true) {
     
-    P_sparse.makeCompressed();
+    P_row_sparse.makeCompressed();
     stateHashes.resize(static_cast<size_t>(n), 0);
     initCommon();
 }
@@ -136,19 +157,29 @@ namespace {
     // transposed.
     // Spectra operator that defers the product to the analyzer's applyS, so the eigensolves share the
     // one accelerated (or threaded) symmetric multiply used by every other spectral routine.
+    //
+    // The operator also carries an optional deadline. Spectra's restart loop cannot be paused, and
+    // re-entering it in batches rebuilds the Krylov basis each time, which both costs products and can
+    // steer the solve onto an interior eigenvalue. Instead each product checks the clock, and once the
+    // deadline has passed it throws SolveBudgetSpent, which unwinds the solve from inside.
+    struct SolveBudgetSpent { };
+
     class AnalyzerSymOp {
 
         public:
             using Scalar = double;
+            using Clock  = std::chrono::steady_clock;
                                     AnalyzerSymOp(void) = delete;
                                     AnalyzerSymOp(const MarkovChainAnalyzer* a, Eigen::Index dim) : self(a), n(dim) { }
             Eigen::Index            rows(void) const { return n; }
             Eigen::Index            cols(void) const { return n; }
             void                    perform_op(const double* x_in, double* y_out) const;
+            void                    setDeadline(const Clock::time_point* d) const { deadline = d; }
 
         private:
             const MarkovChainAnalyzer* self;
             Eigen::Index               n;
+            mutable const Clock::time_point* deadline = nullptr;
     };
 
     class DeflatedSymOp {
@@ -177,12 +208,77 @@ namespace {
             const Eigen::VectorXd*    w;
     };
 
+    // The inverse of A = I - S + w w', applied by a conjugate-gradient solve, for a shift-invert Lanczos
+    // solve of the slow end of the spectrum. A maps the eigenvalue lambda of S to 1 - lambda (and w to
+    // 1), so A^{-1} maps the slow modes, lambda near 1, to its largest and best-separated eigenvalues,
+    // mu = 1 / (1 - lambda). The cluster just below 1 that stalls an ordinary Lanczos solve of S is
+    // spread out by the inversion, and a small subspace resolves it in a few dozen solves.
+    class ShiftInvertOp {
+
+        public:
+            using Scalar = double;
+                                    ShiftInvertOp(void) = delete;
+                                    ShiftInvertOp(const std::function<void(const double*, double*)>* f, Eigen::Index dim) :
+                                        solve(f), n(dim) { }
+            Eigen::Index            rows(void) const { return n; }
+            Eigen::Index            cols(void) const { return n; }
+            void                    perform_op(const double* x_in, double* y_out) const { (*solve)(x_in, y_out); }
+
+        private:
+            const std::function<void(const double*, double*)>* solve;
+            Eigen::Index            n;
+    };
+
+    // The product of the transition kernel with a block of vectors, Y = P X, X and Y stored row-major
+    // (n x numCols) so that each kernel entry is read once and applied to every column. The product is
+    // limited by memory bandwidth, so a block of k vectors costs little more than a single vector.
+    class SparseMatBlockTask : public ThreadTask {
+
+        public:
+                                    SparseMatBlockTask(void) = delete;
+                                    SparseMatBlockTask(const int* out, const int* in, const double* v,
+                                                       const double* x, double* y, int k,
+                                                       Eigen::Index lo, Eigen::Index hi) :
+                                        outerIndex(out), innerIndex(in), values(v),
+                                        xIn(x), yOut(y), numCols(k), begin(lo), end(hi) { }
+            void                    run(void) override;
+
+        private:
+            const int*              outerIndex;
+            const int*              innerIndex;
+            const double*           values;
+            const double*           xIn;
+            double*                 yOut;
+            int                     numCols;
+            Eigen::Index            begin;
+            Eigen::Index            end;
+    };
+
+    void SparseMatBlockTask::run(void) {
+
+        for (Eigen::Index i = begin; i < end; ++i)
+            {
+            double* yi = yOut + i * numCols;
+            for (int c = 0; c < numCols; ++c)
+                yi[c] = 0.0;
+            for (int k = outerIndex[i]; k < outerIndex[i+1]; ++k)
+                {
+                double v = values[k];
+                const double* xj = xIn + static_cast<Eigen::Index>(innerIndex[k]) * numCols;
+                for (int c = 0; c < numCols; ++c)
+                    yi[c] += v * xj[c];
+                }
+            }
+    }
+
 } // anonymous namespace
 
 double MarkovChainAnalyzer::s_solveBudgetSeconds = 1800.0;
 
 void AnalyzerSymOp::perform_op(const double* x_in, double* y_out) const {
 
+    if (deadline != nullptr && Clock::now() >= *deadline)
+        throw SolveBudgetSpent();
     self->applyS(x_in, y_out);
 }
 
@@ -231,6 +327,54 @@ void MarkovChainAnalyzer::applyS(const double* x, double* y) const {
     Eigen::Map<Vector>(y, N) = piSqrtCached.cwiseProduct(u);
 }
 
+// Y = S X for a block of numCols vectors, X and Y row-major (n x numCols). Each pass over the kernel
+// serves every column, so a block of probes in the stochastic Kemeny estimate costs about as much
+// memory traffic as one probe.
+void MarkovChainAnalyzer::applySBlock(const double* X, double* Y, int numCols) const {
+
+    Eigen::Index N = static_cast<Eigen::Index>(n);
+    if (!piSqrtReady)
+        {
+        piSqrtCached = posteriorSqrt();
+        piSqrtReady = true;
+        }
+
+    using RowBlock = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+    Eigen::Map<const RowBlock> Xm(X, N, numCols);
+    Eigen::Map<RowBlock>       Ym(Y, N, numCols);
+    RowBlock T = piSqrtCached.cwiseInverse().asDiagonal() * Xm;   // D^{-1/2} X
+
+    if (!isSparse)
+        {
+        Ym.noalias() = piSqrtCached.asDiagonal() * (P_dense * T);
+        return;
+        }
+
+    ensureRowSparse();
+    const int*    outerIndex = P_row_sparse.outerIndexPtr();
+    const int*    innerIndex = P_row_sparse.innerIndexPtr();
+    const double* values     = P_row_sparse.valuePtr();
+
+    int numTasks = (threadPool == nullptr) ? 1 : std::max(1, threadPool->getThreadCount() * 4);
+    Eigen::Index chunk = std::max<Eigen::Index>(1, (N + numTasks - 1) / numTasks);
+    std::vector<SparseMatBlockTask> tasks;
+    tasks.reserve(static_cast<size_t>(numTasks) + 1);
+    for (Eigen::Index lo = 0; lo < N; lo += chunk)
+        tasks.emplace_back(outerIndex, innerIndex, values, T.data(), Y, numCols, lo, std::min(N, lo + chunk));
+    if (threadPool == nullptr)
+        {
+        for (SparseMatBlockTask& t : tasks)
+            t.run();
+        }
+    else
+        {
+        for (SparseMatBlockTask& t : tasks)
+            threadPool->pushTask(&t);
+        threadPool->wait();
+        }
+    Ym = piSqrtCached.asDiagonal() * Ym;                          // D^{1/2} P D^{-1/2} X
+}
+
 void MarkovChainAnalyzer::buildAcceleratedOperator(void) const {
 
 #if MCA_USE_ACCELERATE
@@ -247,16 +391,16 @@ void MarkovChainAnalyzer::buildAcceleratedOperator(void) const {
     // bandwidth-bound fp64 kernel. Underflowed states are already gone (support restriction), so every
     // sqrt is finite here.
     long cnt = 0;
-    for (int col = 0; col < P_sparse.outerSize(); ++col)
-        for (SparseMatrix::InnerIterator it(P_sparse, col); it; ++it)
+    for (int col = 0; col < P_row_sparse.outerSize(); ++col)
+        for (RowSparseMatrix::InnerIterator it(P_row_sparse, col); it; ++it)
             if (it.row() <= it.col())
                 ++cnt;
 
     std::vector<int>    rows; rows.reserve(static_cast<size_t>(cnt));
     std::vector<int>    cols; cols.reserve(static_cast<size_t>(cnt));
     std::vector<double> vals; vals.reserve(static_cast<size_t>(cnt));
-    for (int col = 0; col < P_sparse.outerSize(); ++col)
-        for (SparseMatrix::InnerIterator it(P_sparse, col); it; ++it)
+    for (int col = 0; col < P_row_sparse.outerSize(); ++col)
+        for (RowSparseMatrix::InnerIterator it(P_row_sparse, col); it; ++it)
             {
             Eigen::Index i = it.row(), j = it.col();
             if (i > j) continue;
@@ -355,7 +499,7 @@ double MarkovChainAnalyzer::averageAcceptanceRate(void) const {
     if (isSparse) 
         {
         for (Eigen::Index i = 0; i < N; ++i)
-            acc += pi(i) * (1.0 - P_sparse.coeff(i, i));
+            acc += pi(i) * (1.0 - P_row_sparse.coeff(i, i));
         } 
     else 
         {
@@ -374,7 +518,7 @@ MarkovChainAnalyzer::Vector MarkovChainAnalyzer::leaveProbabilities(void) const 
     Vector leave(N);
     if (isSparse)
         {
-        Vector diag = P_sparse.diagonal();
+        Vector diag = P_row_sparse.diagonal();
         for (Eigen::Index i = 0; i < N; ++i)
             leave(i) = 1.0 - diag(i);
         }
@@ -460,7 +604,7 @@ void MarkovChainAnalyzer::buildFromCache(TreeCache* cache) {
                 {
                 TreeInfo* cur = stack.back();
                 stack.pop_back();
-                for (TreeInfo* nb : cur->neighbors)
+                for (TreeInfo* nb : cache->neighbors(cur))
                     {
                     if (!nb || nb->stateIndex < 0)
                         continue;
@@ -523,17 +667,40 @@ void MarkovChainAnalyzer::buildFromCache(TreeCache* cache) {
 
     pi = Vector::Zero(static_cast<Eigen::Index>(n));
 
-    // Reserve exactly the number of entries the kernel will hold. Guessing low is expensive here:
-    // a TBR kernel for ten taxa has some 590 million non-zero entries, and growing the triplet
-    // array to that size from a small reservation copies tens of gigabytes.
-    size_t numEntries = n;                                        // one diagonal entry per tree
+    // The kernel is written row by row, straight into its final compressed row-major storage. Earlier
+    // versions gathered every edge as a (row, column, value) triplet, had Eigen sort them through a
+    // transposed temporary into a column-major matrix, and then copied that into a row-major one for
+    // the products: at ten taxa, for TBR, some 12 GB of triplets and 9 GB of temporary on the way to
+    // two 7 GB copies of the same matrix. One row-major copy now serves every routine; those that
+    // need a column of P read it from the corresponding row through detailed balance.
+    //
+    // The storage is reserved from an upper bound on each row's length: its distinct neighbors in the
+    // support, plus the diagonal. The rows of the cache are sorted by likelihood, so a neighbor listed
+    // twice appears in consecutive entries, and counting the changes along the row bounds the number
+    // of distinct columns without a sort.
+    std::vector<TreeInfo*> rowTree(n, nullptr);                   // the tree at each state index
     for (const auto& [h, info] : tcache)
+        if (info && info->stateIndex >= 0)
+            rowTree[static_cast<size_t>(info->stateIndex)] = info;
+
+    size_t numEntries = 0;
+    for (size_t i = 0; i < n; ++i)
         {
-        if (info)
-            numEntries += info->neighbors.size();
+        NeighborList nbrs = cache->neighbors(rowTree[i]);
+        size_t distinct = 0;
+        for (uint32_t k = 0; k < nbrs.size(); ++k)
+            if (nbrs[k]->stateIndex >= 0 && (k == 0 || nbrs.indexAt(k) != nbrs.indexAt(k - 1)))
+                ++distinct;
+        numEntries += distinct + 1;                               // + the diagonal
         }
-    std::vector<Eigen::Triplet<double>> triplets;
-    triplets.reserve(numEntries);
+
+    if (isSparse)
+        {
+        P_row_sparse = RowSparseMatrix(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(n));
+        P_row_sparse.reserve(static_cast<Eigen::Index>(numEntries));
+        }
+    else
+        P_dense = DenseMatrix::Zero(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(n));
 
     // The transition probability from i to j requires the REVERSE proposal probability, q(i|j),
     // which is a property of j's neighborhood rather than of i's. Searching j's neighbor list for i
@@ -547,50 +714,51 @@ void MarkovChainAnalyzer::buildFromCache(TreeCache* cache) {
     // in which lnLmax_j is the largest log likelihood among j's neighbors and Z_j the normalizing
     // constant. Both scalars were already formed when the proposal probabilities were cached, and
     // TreeCache keeps them, so the reverse proposal probability is available in constant time.
+    if (cache->hasNeighborProposalProbabilities() == false)
+        throw std::runtime_error("MarkovChainAnalyzer (" + name + "): proposal probabilities have not been cached");
     double worstProposalDefect = 0.0;
 
-    for (const auto& [h_from, info_from] : tcache) 
+    std::vector<std::pair<int, double>> row;                      // (column, P_ij) for one row
+    for (size_t ii = 0; ii < n; ++ii)
         {
-        if (!info_from || info_from->stateIndex < 0)
-            continue;
-        Eigen::Index i = static_cast<Eigen::Index>(info_from->stateIndex);
+        TreeInfo* info_from = rowTree[ii];
+        Eigen::Index i = static_cast<Eigen::Index>(ii);
         pi(i) = info_from->posteriorProbability;
         double sumTransition = 0.0;
 
+        NeighborList nbrs = cache->neighbors(info_from);
         double rawProposalMass = 0.0;
-        for (double q : info_from->neighborProposalProbabilities)
-            rawProposalMass += q;
+        for (uint32_t k = 0; k < nbrs.size(); ++k)
+            rawProposalMass += cache->neighborProposalProbability(info_from, nbrs[k]);
         worstProposalDefect = std::max(worstProposalDefect, std::abs(rawProposalMass - 1.0));
 
         double pi_i   = info_from->posteriorProbability;
-        double lnL_i  = info_from->lnLikelihood;
-        size_t numQ   = info_from->neighborProposalProbabilities.size();
 
-        for (size_t k = 0; k < info_from->neighbors.size(); ++k) 
+        row.clear();
+        for (uint32_t k = 0; k < nbrs.size(); ++k)
             {
-            TreeInfo* info_to = info_from->neighbors[k];
-            if (!info_to || info_to->stateIndex < 0)
+            TreeInfo* info_to = nbrs[k];
+            if (info_to->stateIndex < 0)
                 continue;
-            Eigen::Index j = static_cast<Eigen::Index>(info_to->stateIndex);
+            int j = static_cast<int>(info_to->stateIndex);
 
-            double q_ij = (k < numQ) ? info_from->neighborProposalProbabilities[k] : 0.0;
+            double q_ij = cache->neighborProposalProbability(info_from, info_to);
             if (q_ij <= 0.0)
                 continue;
 
-            double q_ji = std::exp((lnL_i - info_to->neighborMaxLnL) * info_to->neighborProposalPower)
-                        * info_to->neighborProposalNormInv;
+            double q_ji = cache->neighborProposalProbability(info_to, info_from);
 
             double pi_j = info_to->posteriorProbability;
-            if (pi_i <= 0.0 || q_ji <= 0.0) 
+            if (pi_i <= 0.0 || q_ji <= 0.0)
                 continue;
 
             double ratio      = (pi_j * q_ji) / (pi_i * q_ij);
             double alpha      = std::min(1.0, ratio);
             double trans_prob = q_ij * alpha;
 
-            if (trans_prob > 0.0) 
+            if (trans_prob > 0.0)
                 {
-                triplets.emplace_back(i, j, trans_prob);
+                row.emplace_back(j, trans_prob);
                 sumTransition += trans_prob;
                 }
             }
@@ -600,27 +768,40 @@ void MarkovChainAnalyzer::buildFromCache(TreeCache* cache) {
             selfProb = 0.0;
         if (selfProb < 0.0)
             std::cerr << "Warning: negative self transition at row " << i << ": " << selfProb << "\n";
-        triplets.emplace_back(i, i, std::max(0.0, selfProb));
+        row.emplace_back(static_cast<int>(i), std::max(0.0, selfProb));
+
+        // Columns in ascending order, the entries for a neighbor listed more than once summed in the
+        // order they were listed (the order in which the old triplet assembly summed them).
+        std::stable_sort(row.begin(), row.end(),
+                         [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        if (isSparse)
+            {
+            P_row_sparse.startVec(i);
+            for (size_t k = 0; k < row.size(); )
+                {
+                int    j = row[k].first;
+                double v = row[k].second;
+                for (++k; k < row.size() && row[k].first == j; ++k)
+                    v += row[k].second;
+                P_row_sparse.insertBack(i, j) = v;
+                }
+            }
+        else
+            {
+            for (const auto& [j, v] : row)
+                P_dense(i, j) += v;
+            }
         }
+    if (isSparse)
+        P_row_sparse.finalize();
 
     if (worstProposalDefect > 1e-6)
         std::cerr << "Warning: proposal probabilities deviate from 1 by up to "
                   << worstProposalDefect << "; the acceptance-rate interpretation of "
                      "1 - P_ii assumes a normalized proposal with no explicit self-proposal.\n";
 
-    if (isSparse) 
-        {
-        P_sparse = SparseMatrix(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(n));
-        P_sparse.setFromTriplets(triplets.begin(), triplets.end());
-        P_sparse.makeCompressed();
-        rowSparseReady = false;
-        } 
-    else 
-        {
-        P_dense = DenseMatrix::Zero(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(n));
-        for (const auto& t : triplets)
-            P_dense(t.row(), t.col()) += t.value();
-        }
+    denseEigenReady = false;
     clearSpectralCache();
 }
 
@@ -715,6 +896,8 @@ void MarkovChainAnalyzer::clearSpectralCache(void) const {
     spectralCacheValid = false;
     spectralCacheNev = 0;
     spectralCache = SpectralInfo();
+    slowModeValues.resize(0);
+    slowModeVectors.resize(0, 0);
 }
 
 double MarkovChainAnalyzer::conductanceForSet(const std::vector<Eigen::Index>& set) const {
@@ -780,7 +963,7 @@ DetailedBalanceInfo MarkovChainAnalyzer::computeDetailedBalanceInfo(double tol) 
                 {
                 Eigen::Index j = it.col();
                 double a = pi(i) * it.value();
-                double b = pi(j) * P_sparse.coeff(j, i);
+                double b = pi(j) * P_row_sparse.coeff(j, i);
                 double d = std::abs(a - b);
                 double denom = std::max({std::abs(a), std::abs(b), std::numeric_limits<double>::min()});
                 info.max_abs_error = std::max(info.max_abs_error, d);
@@ -1017,17 +1200,18 @@ size_t MarkovChainAnalyzer::countReachableReverse(Eigen::Index start, double thr
 
     if (isSparse) 
         {
-        // P_sparse is column-major. Iterating over column i gives all j such that P(j,i) > 0,
-        // which are exactly the outgoing neighbors of i in the reversed transition graph.
-        while (!stack.empty()) 
+        // The outgoing neighbors of i in the reversed graph are the j with P(j,i) above the threshold:
+        // column i of P. The kernel is stored by rows, but it is reversible, so P(j,i) =
+        // pi_i P(i,j) / pi_j, and row i, whose support is the same, gives the column.
+        while (!stack.empty())
             {
             Eigen::Index i = stack.back();
             stack.pop_back();
-            for (SparseMatrix::InnerIterator it(P_sparse, i); it; ++it) 
+            for (RowSparseMatrix::InnerIterator it(P_row_sparse, i); it; ++it)
                 {
-                Eigen::Index j = it.row();
+                Eigen::Index j = it.col();
                 if (j == i) continue;
-                if (it.value() <= threshold) continue;
+                if (pi(i) * it.value() / pi(j) <= threshold) continue;
                 size_t jj = static_cast<size_t>(j);
                 if (!visited[jj]) 
                     {
@@ -1070,7 +1254,7 @@ MarkovChainAnalyzer::DenseMatrix MarkovChainAnalyzer::computeHittingTimes(void) 
         }
 
     Eigen::Index N = static_cast<Eigen::Index>(n);
-    DenseMatrix Pmat = isSparse ? DenseMatrix(P_sparse) : P_dense;
+    DenseMatrix Pmat = isSparse ? DenseMatrix(P_row_sparse) : P_dense;
     DenseMatrix I = DenseMatrix::Identity(N, N);
     DenseMatrix A = I - Pmat;
     for (Eigen::Index i = 0; i < N; i++)
@@ -1106,15 +1290,13 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfo(void) const {
     // Reversible chain => symmetrize and use a self-adjoint solver: real spectrum, no
     // spurious complex eigenvalues, and a full Euclidean-orthonormal eigenbasis of S
     // (whose columns map to pi-orthonormal eigenvectors of P).
-    DenseMatrix S = symmetrizedDense();
-    Eigen::SelfAdjointEigenSolver<DenseMatrix> es(S);
-    if (es.info() != Eigen::Success)
+    if (!ensureDenseEigensystem())
         {
         info.spectral_status = "dense_selfadjoint_failed";
         return info;
         }
 
-    info.eigenvalues_real = es.eigenvalues().reverse();   // descending algebraic order
+    info.eigenvalues_real = denseEigenvalues;             // descending algebraic order
     info.n_converged = static_cast<int>(info.eigenvalues_real.size());
     finalizeSpectralReal(info);
 
@@ -1189,144 +1371,262 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
 
     DeflatedSymOp dop(op, w);
 
-    int kBot = std::min(2, static_cast<int>(n) - 1);
+    int kBot = 1;
 
-    // Attempts widen the Krylov subspace and iteration budget; the last is deliberately generous, since
-    // resolving lambda_2 at the top of a dense near-1 cluster needs ncv well above the cluster size.
-    struct SolverAttempt { int ncv; int maxit; double tol; };
-    std::vector<SolverAttempt> attempts;
-    attempts.push_back({std::min(static_cast<int>(n), std::max(2 * nev + 1,  20)),  2000, 1e-10});
-    attempts.push_back({std::min(static_cast<int>(n), std::max(6 * nev + 40, 120)),  6000, 1e-11});
-    attempts.push_back({std::min(static_cast<int>(n), std::max(12 * nev + 80, 300)), 12000, 1e-12});
-    attempts.push_back({std::min(static_cast<int>(n), std::max(24 * nev + 160, 700)),24000, 1e-12});
-
-    double bestResidual = std::numeric_limits<double>::infinity();
-    int attemptNumber = 0;
-
-    // Wall-clock cap. On a collapsed, near-degenerate spectrum the restarted Lanczos can iterate for
-    // hours making little progress; rather than stall the whole run we drive compute() one restart at a
-    // time (it resumes from its current factorization) and stop when the budget is spent.
+    // Wall-clock cap for the whole solve. A pathological spectrum should cost a bounded amount of time
+    // and be reported "solver_timed_out", not stall the run.
     using SolveClock = std::chrono::steady_clock;
     const SolveClock::time_point solveDeadline =
         SolveClock::now() + std::chrono::duration_cast<SolveClock::duration>(
                                 std::chrono::duration<double>(s_solveBudgetSeconds));
     bool timedOut = false;
 
-    auto computeCapped = [&](auto& eigs, Spectra::SortRule rule, int maxit, double tol, const char* which) -> int
+    auto computeCapped = [&](auto& eigs, Spectra::SortRule rule, int maxit, double tol, const char* which,
+                             SolveClock::time_point deadline, bool& expired) -> int
         {
-        // Drive Spectra in coarse batches so its internal restart loop runs at full speed, checking the
-        // clock only between batches. One-restart-at-a-time chunking made each restart pay the per-call
-        // overhead (convergence test, Ritz re-sort) and slowed otherwise-quick solves to a crawl; a
-        // batch of many restarts restores the original speed while still bounding the wall-clock to at
-        // most one extra batch beyond the budget.
-        const int batch = 200;
+        // One uninterrupted Spectra solve, cut off from inside by the operator's deadline (see
+        // AnalyzerSymOp). Earlier versions drove the solve in batches of 200 restarts and checked the
+        // clock between them; a batch is a fraction of a second on a small kernel but some 30 minutes on a
+        // 10-taxon TBR kernel, where it let a capped solve overrun fourfold. Smaller batches would bound
+        // the overrun, but each re-entry rebuilds the Krylov basis, and in tests that sent the bottom solve
+        // to an interior eigenvalue. Returns the number of converged eigenvalues (0 if cut off).
         auto t0 = SolveClock::now();
-        eigs.init();
-        int nconv = 0, restarts = 0;
-        for (int done = 0; done < maxit; done += batch)
+        int nconv = 0;
+        bool converged = false;
+        op.setDeadline(&deadline);
+        try
             {
-            int step = std::min(batch, maxit - done);
-            nconv = (int)eigs.compute(rule, step, tol);
-            if (eigs.info() == Spectra::CompInfo::Successful)
-                break;
-            if (SolveClock::now() >= solveDeadline)
-                { timedOut = true; break; }
+            eigs.init();
+            nconv = (int)eigs.compute(rule, maxit, tol);
+            converged = (eigs.info() == Spectra::CompInfo::Successful);
             }
-        restarts = (int)eigs.num_iterations();                    // actual restarts performed
+        catch (const SolveBudgetSpent&)
+            {
+            expired = true;
+            nconv = 0;
+            }
+        op.setDeadline(nullptr);
         double secs = std::chrono::duration<double>(SolveClock::now() - t0).count();
-        std::cerr << "   [" << name << " " << which << "] " << restarts << " restarts, "
-                  << secs << " s, converged=" << (eigs.info() == Spectra::CompInfo::Successful)
-                  << (timedOut ? " (budget spent)" : "") << "\n";
+        std::cerr << "   [" << name << " " << which << "] " << (expired ? std::string("cut off") :
+                                                                  std::to_string(eigs.num_iterations()) + " restarts")
+                  << ", " << secs << " s, converged=" << converged
+                  << (expired ? " (budget spent)" : "") << "\n";
         return nconv;
         };
 
-    for (const SolverAttempt& attempt : attempts)
+    // ---- The slow end: lambda_2, lambda_3, ... ----
+    // A plain Lanczos solve of the deflated operator is tried first, with a modest restart budget: when
+    // the gap below 1 is comfortable it converges in a few dozen restarts and is the cheapest route.
+    // When the posterior is split into weakly connected basins, lambda_2 sits in a tight cluster just
+    // below 1 (1 - 6.5e-8 on a 9-taxon NNI kernel) that no affordable Krylov subspace resolves;
+    // widening the subspace, as earlier versions did, only made each restart dominated by the serial
+    // reorthogonalization, and such cells ran out the budget and reported NaN. Those cells are handed
+    // to shift-invert Lanczos on (I - S + w w')^{-1}, which separates the cluster and converges in
+    // seconds. A cluster that is degenerate but not close to 1 (exactly repeated eigenvalues, as a
+    // uniform proposal on a symmetric neighborhood graph produces) is not separated by the inversion; the
+    // wide-subspace Lanczos attempts of earlier versions are kept after shift-invert for those. If no
+    // attempt converges fully, converged eigenpairs from a partial solve are used, flagged "ok_partial".
+    // Whatever their source, the eigenpairs are checked against S itself below.
+    const int    standardTopRestarts = 100;      // ~1,600 kernel products; 5+ minutes at ten-taxon TBR
+    const double standardTol         = 1e-10;
+    int ncvTop = std::min(static_cast<int>(n), std::max(std::max(2 * nev + 1, 20), nev + 2));
+    int    ncvUsed   = ncvTop;
+    int    maxitUsed = standardTopRestarts;
+    double tolUsed   = standardTol;
+
+    std::vector<std::pair<double, Eigen::VectorXd>> topPairs;
+    bool sawNaN = false;
+    int  nconvTop = 0;
+    auto collectTop = [&](const Eigen::VectorXd& vals, const Eigen::MatrixXd& vecs)
         {
-        attemptNumber++;
-        if (timedOut)
-            break;
+        topPairs.clear();
+        sawNaN = false;
+        nconvTop = static_cast<int>(vals.size());
+        for (Eigen::Index i = 0; i < vals.size(); ++i)
+            {
+            if (!std::isfinite(vals(i))) { sawNaN = true; continue; }
+            // Skip the deflated unit mode: its eigenvector is w, which is not an eigenvector of the
+            // deflated operator at eigenvalue 1. Genuine eigenvectors (lambda != 1) are orthogonal to w,
+            // so a large overlap identifies the deflated direction.
+            if (std::abs(w.dot(vecs.col(i))) > 0.5)
+                continue;
+            topPairs.push_back({vals(i), vecs.col(i)});
+            }
+        };
 
-        int ncvTop = std::max(attempt.ncv, nev + 2);
-        ncvTop = std::min(ncvTop, static_cast<int>(n));
-        int ncvBot = std::min(static_cast<int>(n), std::max(std::max(2 * kBot + 1, 20), kBot + 2));
+    int  attemptNumber = 0;
+    bool topOK = false;
+    bool usedShiftInvert = false;
 
-        // lambda_2 = largest eigenvalue of the deflated operator; lambda_min from the base operator.
-        Spectra::SymEigsSolver<DeflatedSymOp> eigsTop(dop, nev, ncvTop);
-        Spectra::SymEigsSolver<Op>            eigsBot(op, kBot, ncvBot);
+    // The converged eigenpairs of the best attempt that did not converge fully, as a last resort.
+    Eigen::VectorXd partialVals;
+    DenseMatrix     partialVecs;
+    auto keepPartial = [&](const Eigen::VectorXd& vals, const DenseMatrix& vecs, int ncv, int maxit, double tol)
+        {
+        if (vals.size() > partialVals.size())
+            {
+            partialVals = vals;
+            partialVecs = vecs;
+            ncvUsed = ncv; maxitUsed = maxit; tolUsed = tol;
+            }
+        };
 
-        int nconvTop = 0, nconvBot = 0;
+    auto runStandard = [&](int ncv, int maxit, double tol, const char* which) -> bool
+        {
+        ++attemptNumber;
+        ncv = std::min(static_cast<int>(n), std::max(ncv, nev + 2));
         try
             {
-            nconvTop = computeCapped(eigsTop, Spectra::SortRule::LargestAlge, attempt.maxit, attempt.tol, "top");
-            if (!timedOut)
-                nconvBot = computeCapped(eigsBot, Spectra::SortRule::SmallestAlge, attempt.maxit, attempt.tol, "bot");
+            Spectra::SymEigsSolver<DeflatedSymOp> eigsTop(dop, nev, ncv);
+            computeCapped(eigsTop, Spectra::SortRule::LargestAlge, maxit, tol, which, solveDeadline, timedOut);
+            if (timedOut)
+                return false;                                         // cut off mid-solve: no usable state
+            Eigen::VectorXd vals = eigsTop.eigenvalues();             // the converged Ritz values only
+            if (vals.size() == 0)
+                return false;
+            if (eigsTop.info() != Spectra::CompInfo::Successful)
+                {
+                keepPartial(vals, eigsTop.eigenvectors(), ncv, maxit, tol);
+                return false;
+                }
+            collectTop(vals, eigsTop.eigenvectors());
+            if (sawNaN || topPairs.empty())
+                return false;
+            ncvUsed = ncv; maxitUsed = maxit; tolUsed = tol;
+            return true;
             }
         catch (const std::exception& e)
             {
-            std::cerr << "Note: eigensolver attempt " << attemptNumber << " for " << name
-                      << " failed internally (" << e.what() << "); retrying with a larger subspace.\n";
-            continue;
+            std::cerr << "Note: Lanczos solve of the slow modes for " << name << " failed internally ("
+                      << e.what() << ").\n";
             }
+        return false;
+        };
 
-        if (timedOut)
-            break;
-
-        SpectralInfo info;
-        info.computed_sparse = true;
-        info.n_converged = std::max(0, nconvTop) + std::max(0, nconvBot);
-        info.ncv_used = ncvTop;
-        info.max_iterations_used = attempt.maxit;
-        info.tolerance_used = attempt.tol;
-        info.num_solver_attempts = attemptNumber;
-        info.spectral_status = "insufficient_converged_eigenvalues";
-
-        // Need at least lambda_2 from the deflated top solve.
-        if (nconvTop < 1 || eigsTop.info() != Spectra::CompInfo::Successful)
-            {
-            if (info.n_converged > bestInfo.n_converged)
-                bestInfo = info;
-            continue;
-            }
-
-        // Assemble the spectrum: the known unit eigenvalue, the deflated top eigenvalues (lambda_2, ...),
-        // and the most-negative eigenvalues. Deflated eigenvectors are eigenvectors of S with the same
-        // eigenvalue (they are orthogonal to w), so residuals are measured against S directly.
-        std::vector<std::pair<double, Eigen::VectorXd>> pairs;
-        pairs.push_back({1.0, w});
-        bool sawNaN = false;
+    auto runShiftInvert = [&](void) -> bool
         {
-            Eigen::VectorXd vt = eigsTop.eigenvalues();
-            Eigen::MatrixXd Vt = eigsTop.eigenvectors();
-            for (Eigen::Index i = 0; i < vt.size(); ++i)
-                {
-                if (!std::isfinite(vt(i))) { sawNaN = true; continue; }
-                // Skip the deflated unit mode: its eigenvector is w (eigenvalue mapped 1 -> 0), which is
-                // not an eigenvector of S at that value. Genuine eigenvectors (lambda != 1) are
-                // orthogonal to w, so a large overlap identifies the deflated direction.
-                if (std::abs(w.dot(Vt.col(i))) > 0.5)
-                    continue;
-                pairs.push_back({vt(i), Vt.col(i)});
-                }
+        ++attemptNumber;
+        usedShiftInvert = true;
+        Eigen::VectorXd lam;
+        DenseMatrix U;
+        const int siRestarts = 50;
+        int siNcv = std::min(static_cast<int>(n), 2 * nev + 8);
+        if (!shiftInvertTopModes(nev, w, siRestarts, solveDeadline, timedOut, lam, U))
+            {
+            if (lam.size() > 0 && !timedOut)
+                keepPartial(lam, U, siNcv, siRestarts, 1e-9);
+            return false;
+            }
+        collectTop(lam, U);
+        if (sawNaN || topPairs.empty())
+            return false;
+        ncvUsed = siNcv; maxitUsed = siRestarts; tolUsed = 1e-9;
+        return true;
+        };
+
+    topOK = runStandard(ncvTop, standardTopRestarts, standardTol, "top");
+    if (!topOK && !timedOut)
+        topOK = runShiftInvert();
+    if (!topOK && !timedOut)
+        topOK = runStandard(std::max(6 * nev + 40, 120), 1000, 1e-11, "top, wide");
+    if (!topOK && !timedOut)
+        topOK = runStandard(std::max(12 * nev + 80, 300), 2000, 1e-12, "top, wider");
+
+    bool partialTop = false;
+    if (!topOK && !timedOut && partialVals.size() > 0)
+        {
+        collectTop(partialVals, partialVecs);
+        topOK = partialTop = (!sawNaN && !topPairs.empty());
+        if (partialTop)
+            std::cerr << "Note: the slow-mode solve for " << name << " converged " << partialVals.size()
+                      << " of " << nev << " eigenpairs; using those (checked against S below).\n";
+        }
+
+    // ---- The fast end: lambda_min, from the undeflated operator ----
+    // Only lambda_min itself is wanted (for the SLEM and the lambda_min column), so one eigenpair is
+    // requested. Earlier versions asked for two, and where the bottom of the spectrum is a repeated
+    // eigenvalue a single-vector Lanczos solve sees only one copy of it, so the second requested value
+    // lay in the continuum above and never converged: a 9-taxon NNI2 kernel ran some 380 s at ncv = 120
+    // without finishing. The error of a Ritz value is quadratic in its residual, so a residual tolerance
+    // of 1e-7 already fixes lambda_min to about 1e-14. Each restart is a full product with the kernel,
+    // ~0.2 s at ten taxa, so the restart budgets are kept small; the subspace is widened if they run out.
+    //
+    // The bottom solve also has its own wall-clock cap, a quarter of the budget. Where lambda_min sits in
+    // the dense bulk of the spectrum near zero it converges very slowly: a 10-taxon TBR kernel ran 201
+    // restarts (1,880 s) without converging, and the timeout then discarded a lambda_2 that had converged
+    // in 10 s. lambda_2, the worst-case IACT, and the slow modes do not depend on lambda_min, so when the
+    // bottom solve runs out they are kept, and only lambda_min and the quantities built on the SLEM (the
+    // spectral gap, relaxation time, and mixing-time bound) are reported as unresolved.
+    const double bottomTol = 1e-7;
+    const SolveClock::time_point bottomDeadline =
+        std::min(solveDeadline, SolveClock::now() + std::chrono::duration_cast<SolveClock::duration>(
+                                    std::chrono::duration<double>(0.25 * s_solveBudgetSeconds)));
+    bool bottomTimedOut = false;
+    struct BottomAttempt { int ncv; int maxit; double tol; };
+    const BottomAttempt bottomAttempts[] = { { std::max(2 * kBot + 1, 20), 300, bottomTol },
+                                             { 60, 300, bottomTol },
+                                             { 120, 300, bottomTol } };
+    std::vector<std::pair<double, Eigen::VectorXd>> botPairs;
+    int nconvBot = 0;
+    for (const BottomAttempt& attempt : bottomAttempts)
+        {
+        if (timedOut || bottomTimedOut || !topOK)
+            break;
+        int ncvBot = std::min(static_cast<int>(n), std::max(attempt.ncv, kBot + 2));
+        try
+            {
+            Spectra::SymEigsSolver<Op> eigsBot(op, kBot, ncvBot);
+            nconvBot = computeCapped(eigsBot, Spectra::SortRule::SmallestAlge, attempt.maxit, attempt.tol, "bot",
+                                     bottomDeadline, bottomTimedOut);
             if (nconvBot > 0 && eigsBot.info() == Spectra::CompInfo::Successful)
                 {
                 Eigen::VectorXd vb = eigsBot.eigenvalues();
                 Eigen::MatrixXd Vb = eigsBot.eigenvectors();
+                botPairs.clear();
+                bool nanBot = false;
                 for (Eigen::Index i = 0; i < vb.size(); ++i)
                     {
-                    if (!std::isfinite(vb(i))) { sawNaN = true; continue; }
-                    pairs.push_back({vb(i), Vb.col(i)});
+                    if (!std::isfinite(vb(i))) { nanBot = true; continue; }
+                    botPairs.push_back({vb(i), Vb.col(i)});
                     }
+                if (!nanBot)
+                    break;
                 }
-        }
-
-        // A NaN eigenvalue from the solver means this subspace was too small; escalate.
-        if (sawNaN && attemptNumber < static_cast<int>(attempts.size()))
-            {
-            if (info.n_converged > bestInfo.n_converged)
-                bestInfo = info;
-            continue;
             }
+        catch (const std::exception& e)
+            {
+            std::cerr << "Note: Lanczos solve of the most negative modes for " << name
+                      << " failed internally (" << e.what() << "); retrying with a larger subspace.\n";
+            }
+        nconvBot = 0;
+        botPairs.clear();
+        }
+    const bool bottomResolved = !botPairs.empty();
+    if (topOK && !timedOut && !bottomResolved)
+        std::cerr << "Warning: lambda_min for " << name << " did not converge"
+                  << (bottomTimedOut ? " within its time cap" : "") << "; lambda_2 and the worst-case IACT are "
+                     "reported, but lambda_min, the SLEM, the spectral gap, the relaxation time, and the "
+                     "mixing-time bound are left unresolved (NaN).\n";
 
+    // Assemble the spectrum: the known unit eigenvalue, the slow eigenvalues (lambda_2, ...), and the
+    // most-negative eigenvalues, with residuals measured against S directly. Returns true if valid.
+    auto assemble = [&](SpectralInfo& info) -> bool
+        {
+        info = SpectralInfo();
+        info.computed_sparse = true;
+        info.n_converged = nconvTop + nconvBot;
+        info.ncv_used = ncvUsed;
+        info.max_iterations_used = maxitUsed;
+        info.tolerance_used = tolUsed;
+        info.num_solver_attempts = attemptNumber;
+        info.spectral_status = "insufficient_converged_eigenvalues";
+
+        std::vector<std::pair<double, Eigen::VectorXd>> pairs;
+        pairs.push_back({1.0, w});
+        for (auto& pr : topPairs)
+            pairs.push_back(pr);
+        for (auto& pr : botPairs)
+            pairs.push_back(pr);
         std::sort(pairs.begin(), pairs.end(),
                   [](const auto& a, const auto& b) { return a.first > b.first; });
 
@@ -1345,34 +1645,59 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
         finalizeSpectralReal(info);
 
         // Residual ||S u - lambda u||: lambda_1 uses the deterministic w-residual; the rest via S.
-        double maxResidual = lambda1Residual;
-        for (auto& pr : uniq)
+        auto residualOf = [&](const std::pair<double, Eigen::VectorXd>& pr) -> double
             {
-            if (std::abs(pr.first - 1.0) < 1e-12)
-                continue;
             const Eigen::VectorXd& u = pr.second;
             double denom = std::max(u.norm(), std::numeric_limits<double>::min());
             Eigen::VectorXd Su(u.size());
             op.perform_op(u.data(), Su.data());
-            double resid = (Su - pr.first * u).norm() / denom;
-            maxResidual = std::max(maxResidual, resid);
+            return (Su - pr.first * u).norm() / denom;
+            };
+        double topResidual = lambda1Residual;
+        double lambda2Top  = 0.0;
+        for (auto& pr : topPairs)
+            {
+            topResidual = std::max(topResidual, residualOf(pr));
+            lambda2Top  = std::max(lambda2Top, std::abs(pr.first));
             }
-        info.max_eigen_residual = maxResidual;
+        // The most negative eigenpair matters only through the SLEM. Where the bottom of the spectrum is
+        // a dense cluster near zero its Ritz vector converges slowly, although the value is long settled;
+        // there it is accepted whenever |lambda_min|, widened by its residual, cannot be the SLEM.
+        double bottomResidual = 0.0;
+        bool   bottomOK       = true;
+        for (auto& pr : botPairs)
+            {
+            double r = residualOf(pr);
+            bottomResidual = std::max(bottomResidual, r);
+            if (!(r < 1e-5) && !(std::abs(pr.first) + r < lambda2Top))
+                bottomOK = false;
+            }
+        info.max_eigen_residual = std::max(topResidual, bottomResidual);
         info.lambda1_error = lambda1Residual;          // deterministic, from the known eigenpair
 
-        bool enough     = (m >= 2);
+        bool enough     = (m >= 2) && !topPairs.empty();
         bool lambda1OK  = std::isfinite(info.lambda1_error) && info.lambda1_error < 1e-5;
-        bool residualOK = std::isfinite(info.max_eigen_residual) && info.max_eigen_residual < 1e-5;
-        bool lambda2OK  = std::isfinite(info.lambda2_abs) && info.lambda2_abs <= 1.0 + 1e-7;
+        bool residualOK = std::isfinite(topResidual) && topResidual < 1e-5 && bottomOK;
+        double lambda2Check = bottomResolved ? info.lambda2_abs : info.lambda2_algebraic;
+        bool lambda2OK  = std::isfinite(lambda2Check) && lambda2Check <= 1.0 + 1e-7;
+
+        // Without lambda_min the SLEM is unknown: finalizeSpectralReal took it from the slow modes alone,
+        // which could understate it, so everything built on it is withdrawn. The worst-case IACT depends
+        // on lambda_2 only and stands.
+        if (!bottomResolved)
+            {
+            info.lambda_min      = std::numeric_limits<double>::quiet_NaN();
+            info.lambda2_abs     = std::numeric_limits<double>::quiet_NaN();
+            info.spectral_gap    = std::numeric_limits<double>::quiet_NaN();
+            info.relaxation_time = std::numeric_limits<double>::quiet_NaN();
+            }
 
         info.spectral_valid = enough && lambda1OK && residualOK && lambda2OK;
         if (info.spectral_valid)
-            {
-            info.spectral_status = "ok";
-            return info;
-            }
-
-        if (!lambda1OK)
+            info.spectral_status = partialTop ? "ok_partial" : (bottomResolved ? "ok" : "ok_lambda_min_unresolved");
+        else if (!enough)
+            info.spectral_status = "insufficient_converged_eigenvalues";
+        else if (!lambda1OK)
             info.spectral_status = "dominant_eigenvalue_not_close_to_one";
         else if (!residualOK)
             info.spectral_status = "large_eigen_residual";
@@ -1380,41 +1705,151 @@ SpectralInfo MarkovChainAnalyzer::computeSpectralInfoSparse(int nev) const {
             info.spectral_status = "lambda2_modulus_greater_than_one";
         else
             info.spectral_status = "invalid_unknown_reason";
+        return info.spectral_valid;
+        };
 
-        if (maxResidual < bestResidual || bestInfo.n_converged < 2)
+    SpectralInfo info;
+    bool valid = topOK && !timedOut && assemble(info);
+
+    // A plain Lanczos result that converged by its own test but fails the residual check against S
+    // (a near-degenerate cluster can do this) gets the shift-invert solve as well.
+    if (!valid && topOK && !timedOut && !usedShiftInvert)
+        {
+        partialTop = false;
+        if (runShiftInvert() && !timedOut)
+            valid = assemble(info);
+        }
+
+    if (valid)
+        {
+        // Keep the slow eigenpairs for the Kemeny estimate, which deflates them exactly.
+        std::sort(topPairs.begin(), topPairs.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+        slowModeValues.resize(static_cast<Eigen::Index>(topPairs.size()));
+        slowModeVectors.resize(static_cast<Eigen::Index>(n), static_cast<Eigen::Index>(topPairs.size()));
+        for (size_t i = 0; i < topPairs.size(); ++i)
             {
-            bestResidual = maxResidual;
-            bestInfo = info;
+            slowModeValues(static_cast<Eigen::Index>(i)) = topPairs[i].first;
+            slowModeVectors.col(static_cast<Eigen::Index>(i)) = topPairs[i].second;
             }
+        return info;
+        }
+
+    if (!topOK || timedOut)
+        {
+        info = SpectralInfo();
+        info.computed_sparse = true;
+        info.num_solver_attempts = attemptNumber;
+        info.spectral_status = "insufficient_converged_eigenvalues";
         }
 
     if (timedOut)
         {
-        bestInfo.spectral_status = "solver_timed_out";
-        bestInfo.spectral_valid  = false;
-        bestInfo.spectral_gap    = std::numeric_limits<double>::quiet_NaN();
-        bestInfo.relaxation_time = std::numeric_limits<double>::quiet_NaN();
-        bestInfo.worst_case_iact = std::numeric_limits<double>::quiet_NaN();
+        info.spectral_status = "solver_timed_out";
+        info.spectral_valid  = false;
+        info.spectral_gap    = std::numeric_limits<double>::quiet_NaN();
+        info.relaxation_time = std::numeric_limits<double>::quiet_NaN();
+        info.worst_case_iact = std::numeric_limits<double>::quiet_NaN();
         std::cerr << "Note: eigensolver for " << name << " exceeded the " << s_solveBudgetSeconds
                   << " s budget; reporting the spectral gap as unresolved (solver_timed_out).\n";
-        return bestInfo;
+        return info;
         }
 
-    if (!bestInfo.spectral_valid) 
+    std::cerr << "Warning: sparse eigen calculation unreliable for " << name
+              << " (status=" << info.spectral_status
+              << ", converged=" << info.n_converged
+              << ", max residual=" << info.max_eigen_residual
+              << ", lambda1 error=" << info.lambda1_error
+              << ").\n";
+    info.spectral_gap = quietNaNValue();
+    info.lambda2_abs = quietNaNValue();
+    info.relaxation_time = quietNaNValue();
+    info.worst_case_iact = quietNaNValue();
+    return info;
+}
+
+// The k slowest modes of S (lambda_2, ..., lambda_{k+1}), by Lanczos on A^{-1}, A = I - S + w w', each
+// application of A^{-1} being a Jacobi-preconditioned conjugate-gradient solve. A has eigenvalue
+// 1 - lambda on every eigenvector of S orthogonal to w, and eigenvalue 1 on w itself, so the largest
+// eigenvalues mu of A^{-1} are the slow modes, lambda = 1 - 1/mu. The eigenvectors are shared. If the
+// spectrum below 1 is entirely negative, w (mu = 1) can appear among the k; the caller screens it by its
+// overlap with w. Returns true if all k converged; otherwise lambdas and U hold whichever did.
+bool MarkovChainAnalyzer::shiftInvertTopModes(int k, const Vector& wUnit, int maxRestarts, std::chrono::steady_clock::time_point deadline,
+                                              bool& timedOut, Eigen::VectorXd& lambdas, DenseMatrix& U) const {
+
+    using SolveClock = std::chrono::steady_clock;
+    Eigen::Index N = static_cast<Eigen::Index>(n);
+    k = std::max(1, std::min(k, static_cast<int>(n) - 2));
+    int ncv = std::min(static_cast<int>(n), 2 * k + 8);
+
+    if (isSparse)
+        ensureRowSparse();
+    Vector piSqrt = posteriorSqrt();
+    Vector diagP = isSparse ? Vector(P_row_sparse.diagonal()) : Vector(P_dense.diagonal());
+    Vector diagonal(N);
+    for (Eigen::Index i = 0; i < N; ++i)
+        diagonal(i) = std::max(1.0e-12, 1.0 - diagP(i) + wUnit(i) * wUnit(i));
+
+    auto applyA = [&](const Vector& y, Vector& out)
         {
-        std::cerr << "Warning: sparse eigen calculation unreliable for " << name
-                  << " (status=" << bestInfo.spectral_status
-                  << ", converged=" << bestInfo.n_converged
-                  << ", max residual=" << bestInfo.max_eigen_residual
-                  << ", lambda1 error=" << bestInfo.lambda1_error
-                  << ").\n";
-        bestInfo.spectral_gap = quietNaNValue();
-        bestInfo.lambda2_abs = quietNaNValue();
-        bestInfo.relaxation_time = quietNaNValue();
-        bestInfo.worst_case_iact = quietNaNValue();
+        applySymmetrizedLaplacian(piSqrt, y, out);                // (I - S) y
+        out += wUnit * wUnit.dot(y);                              // + w w' y
+        };
+
+    long   totalCgIterations = 0;
+    int    numSolves         = 0;
+    int    numUnconverged    = 0;
+    double worstResidual     = 0.0;
+    const double cgTolerance = 1e-10;
+    std::function<void(const double*, double*)> solve = [&](const double* x, double* y)
+        {
+        if (SolveClock::now() >= deadline)
+            {
+            timedOut = true;
+            throw std::runtime_error("solve budget spent");
+            }
+        Vector b = Eigen::Map<const Vector>(x, N);
+        Vector sol;
+        int    iterations = 0;
+        double residual   = 0.0;
+        if (!conjugateGradient(applyA, diagonal, b, sol, cgTolerance, 100000, iterations, residual))
+            ++numUnconverged;
+        totalCgIterations += iterations;
+        ++numSolves;
+        worstResidual = std::max(worstResidual, residual);
+        Eigen::Map<Vector>(y, N) = sol;
+        };
+
+    ShiftInvertOp siop(&solve, N);
+    auto t0 = SolveClock::now();
+    bool ok = false;
+    try
+        {
+        Spectra::SymEigsSolver<ShiftInvertOp> eigs(siop, k, ncv);
+        eigs.init();
+        eigs.compute(Spectra::SortRule::LargestAlge, maxRestarts, 1e-9);
+        ok = (eigs.info() == Spectra::CompInfo::Successful);
+        Eigen::VectorXd mu = eigs.eigenvalues();                  // the converged Ritz values only
+        lambdas.resize(mu.size());
+        for (Eigen::Index i = 0; i < mu.size(); ++i)
+            lambdas(i) = 1.0 - 1.0 / mu(i);
+        U = eigs.eigenvectors();
+        }
+    catch (const std::exception& e)
+        {
+        if (!timedOut)
+            std::cerr << "Note: shift-invert solve for " << name << " failed internally (" << e.what() << ").\n";
+        ok = false;
         }
 
-    return bestInfo;
+    double secs = std::chrono::duration<double>(SolveClock::now() - t0).count();
+    std::cerr << "   [" << name << " top, shift-invert] " << numSolves << " CG solves, " << totalCgIterations
+              << " CG iterations, " << secs << " s, converged=" << ok
+              << (timedOut ? " (budget spent)" : "") << "\n";
+    if (numUnconverged > 0)
+        std::cerr << "Warning: " << numUnconverged << " of the shift-invert CG solves for " << name
+                  << " stopped short of tolerance (worst relative residual " << worstResidual << ").\n";
+    return ok && !timedOut;
 }
 
 ThresholdedIrreducibilityInfo MarkovChainAnalyzer::computeThresholdedIrreducibilityInfo(const std::vector<double>& thresholds, double tinyLeaveProb) const {
@@ -1553,12 +1988,13 @@ double MarkovChainAnalyzer::conductanceFromOrderingFast(const std::vector<Eigen:
             Eigen::Index x = order[k];
             if (inSet[static_cast<size_t>(x)]) continue;
 
-            // Remove old A -> x contributions, because x moves from A^c to A.
-            for (SparseMatrix::InnerIterator it(P_sparse, x); it; ++it) 
+            // Remove old A -> x contributions, because x moves from A^c to A. Each is pi_i P(i,x), which
+            // by detailed balance is pi_x P(x,i), so they are read from row x.
+            for (RowSparseMatrix::InnerIterator it(P_row_sparse, x); it; ++it)
                 {
-                Eigen::Index i = it.row();
+                Eigen::Index i = it.col();
                 if (inSet[static_cast<size_t>(i)])
-                    flow -= pi(i) * it.value();
+                    flow -= pi(x) * it.value();
                 }
 
             // Add new x -> A^c contributions.
@@ -1612,7 +2048,7 @@ std::vector<double> MarkovChainAnalyzer::defaultIrreducibilityThresholds(void) {
 
 MarkovChainAnalyzer::DenseMatrix MarkovChainAnalyzer::denseTransitionMatrix(void) const {
 
-    return isSparse ? DenseMatrix(P_sparse) : P_dense;
+    return isSparse ? DenseMatrix(P_row_sparse) : P_dense;
 }
 
 // The efficiency, or variance ratio, of the chain for estimating the posterior mean of h.
@@ -1668,7 +2104,7 @@ EfficiencyInfo MarkovChainAnalyzer::efficiencyFor(const Vector& h, int maxIterat
     if (!(varIndependent > 0.0))
         return info;                                              // h is constant under the posterior
 
-    Vector diagP = isSparse ? Vector(P_sparse.diagonal()) : Vector(P_dense.diagonal());
+    Vector diagP = isSparse ? Vector(P_row_sparse.diagonal()) : Vector(P_dense.diagonal());
     Vector diagonal(N);
     for (Eigen::Index i = 0; i < N; ++i)
         diagonal(i) = std::max(1.0e-12, 1.0 - diagP(i) + pi(i));
@@ -1702,35 +2138,45 @@ double MarkovChainAnalyzer::eigenvectorSweepConductance(size_t maxDenseStates) c
     if (n > maxDenseStates)
         return std::numeric_limits<double>::quiet_NaN();
 
-    DenseMatrix P = isSparse ? DenseMatrix(P_sparse) : P_dense;
-    Eigen::EigenSolver<DenseMatrix> solver(P);
-    Eigen::VectorXcd evals = solver.eigenvalues();
-    Eigen::MatrixXcd evecs = solver.eigenvectors();
+    // The kernel is reversible, so the right eigenvectors of P are v = D^{-1/2} u, u the eigenvectors of
+    // the symmetrized S, and the cached symmetric eigensystem serves here. (Eigen's general, complex
+    // EigenSolver on P, used before, was some fifty times slower than the symmetric solve.)
+    if (!ensureDenseEigensystem())
+        return std::numeric_limits<double>::quiet_NaN();
 
     std::vector<std::pair<double, Eigen::Index>> moduli;
     moduli.reserve(static_cast<size_t>(n));
-    for (Eigen::Index i = 0; i < evals.size(); ++i)
-        moduli.push_back({std::abs(evals(i)), i});
-    std::sort(moduli.begin(), moduli.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (Eigen::Index i = 0; i < denseEigenvalues.size(); ++i)
+        moduli.push_back({std::abs(denseEigenvalues(i)), i});
+    std::stable_sort(moduli.begin(), moduli.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
     if (moduli.size() < 2)
         return std::numeric_limits<double>::quiet_NaN();
 
     Eigen::Index eigIndex = moduli[1].second;
+    Vector v = pi.cwiseSqrt().cwiseInverse().cwiseProduct(denseEigenvectors.col(eigIndex));
     std::vector<Eigen::Index> order(static_cast<size_t>(n));
     std::iota(order.begin(), order.end(), 0);
-    std::sort(order.begin(), order.end(), [&evecs, eigIndex](Eigen::Index a, Eigen::Index b) {
-        return evecs(a, eigIndex).real() < evecs(b, eigIndex).real();
+    std::sort(order.begin(), order.end(), [&v](Eigen::Index a, Eigen::Index b) {
+        return v(a) < v(b);
     });
-    return conductanceFromOrderingFast(order);
+
+    // An eigenvector's sign is arbitrary, and the sweep stops at half the posterior mass, so a sweep in
+    // one direction sees only the cuts on one side of the median. Sweeping both ways covers every cut
+    // of the ordering and makes the estimate independent of the sign the solver happened to return.
+    double forward = conductanceFromOrderingFast(order);
+    std::reverse(order.begin(), order.end());
+    double backward = conductanceFromOrderingFast(order);
+    if (std::isnan(forward))
+        return backward;
+    if (std::isnan(backward))
+        return forward;
+    return std::min(forward, backward);
 }
 
 void MarkovChainAnalyzer::ensureRowSparse(void) const {
 
-    if (!isSparse || rowSparseReady)
-        return;
-    P_row_sparse = P_sparse;
-    P_row_sparse.makeCompressed();
-    rowSparseReady = true;
+    // The kernel is built in row-major form, so there is nothing to convert. Kept so that the routines
+    // that once triggered the conversion need not change.
 }
 
 double MarkovChainAnalyzer::entropyRate(void) const {
@@ -1854,14 +2300,70 @@ void MarkovChainAnalyzer::finalizeSpectralInfo(SpectralInfo& info) {
 
 bool MarkovChainAnalyzer::fullSymmetricEigensystem(Eigen::VectorXd& evals, DenseMatrix& U) const {
 
+    if (n < 1 || !ensureDenseEigensystem())
+        return false;
+    evals = denseEigenvalues.reverse();             // ascending
+    U = denseEigenvectors.rowwise().reverse();      // columns are Euclidean-orthonormal eigenvectors of S
+    return true;
+}
+
+// The full eigensystem of S = D^{1/2} P D^{-1/2}, computed once and cached: eigenvalues in descending
+// order and the matching orthonormal eigenvectors. Every dense spectral routine (the spectral summary,
+// Kemeny's constant, the eigenvector sweep, the eigensystem files) reads it, where each used to run its
+// own O(n^3) solve -- four per (move, power) cell, three of them repeats.
+bool MarkovChainAnalyzer::ensureDenseEigensystem(void) const {
+
+    if (denseEigenReady)
+        return true;
     if (n < 1)
         return false;
+
     DenseMatrix S = symmetrizedDense();
+    Eigen::Index N = S.rows();
+    Eigen::VectorXd ascending(N);
+
+#if MCA_USE_LAPACK
+    {
+    int nn = static_cast<int>(N), lda = nn, info = 0, lwork = -1, liwork = -1, iworkQuery = 0;
+    double workQuery = 0.0;
+    const char jobz = 'V', uplo = 'L';
+    dsyevd_(&jobz, &uplo, &nn, S.data(), &lda, ascending.data(), &workQuery, &lwork, &iworkQuery, &liwork, &info);
+    if (info == 0)
+        {
+        lwork  = static_cast<int>(workQuery);
+        liwork = iworkQuery;
+        std::vector<double> work(static_cast<size_t>(std::max(1, lwork)));
+        std::vector<int>    iwork(static_cast<size_t>(std::max(1, liwork)));
+        dsyevd_(&jobz, &uplo, &nn, S.data(), &lda, ascending.data(), work.data(), &lwork, iwork.data(), &liwork, &info);
+        }
+    if (info != 0)
+        {
+        std::cerr << "Note: LAPACK dsyevd failed for " << name << " (info = " << info
+                  << "); falling back to Eigen's self-adjoint solver.\n";
+        S = symmetrizedDense();
+        Eigen::SelfAdjointEigenSolver<DenseMatrix> es(S);
+        if (es.info() != Eigen::Success)
+            return false;
+        ascending = es.eigenvalues();
+        S = es.eigenvectors();
+        }
+    }
+#else
+    {
     Eigen::SelfAdjointEigenSolver<DenseMatrix> es(S);
     if (es.info() != Eigen::Success)
         return false;
-    evals = es.eigenvalues();   // ascending
-    U = es.eigenvectors();      // columns are Euclidean-orthonormal eigenvectors of S
+    ascending = es.eigenvalues();
+    S = es.eigenvectors();
+    }
+#endif
+
+    // Reorder to descending, swapping columns in place rather than copying an n x n matrix.
+    denseEigenvalues = ascending.reverse();
+    for (Eigen::Index k = 0; k < N / 2; ++k)
+        S.col(k).swap(S.col(N - 1 - k));
+    denseEigenvectors = std::move(S);
+    denseEigenReady = true;
     return true;
 }
 
@@ -2078,9 +2580,22 @@ double MarkovChainAnalyzer::kemenyConstantStochastic(int numProbes, int lanczosS
     // M = I - S over the complement of its null space. S = D^{1/2} P D^{-1/2} is symmetric with
     // the same spectrum as P, and w = sqrt(pi) is its exact stationary eigenvector (M w = 0).
     //
-    // Stochastic Lanczos quadrature: for Rademacher probes z deflated against w, Hutchinson gives
-    // E[ z'^T f(M) z' ] = trace( f(M) (I - w w^T) ) with f(mu) = 1/mu, and each quadratic form is
-    // approximated by Gauss quadrature read off an m-step Lanczos tridiagonalization of M.
+    // The trace is split in two. The slow modes found by the spectral solve (lambda_2, lambda_3, ...)
+    // are summed exactly. On a chain whose basins are weakly connected they dominate the sum -- a
+    // single lambda_2 = 1 - 6.5e-8 contributes 1.5e7 -- and a Hutchinson estimate, which samples the
+    // trace through random probes, cannot resolve a sum carried by a handful of directions: an earlier
+    // version, which estimated the whole trace stochastically, came out more than ten times too small on
+    // such a chain. The remainder, the trace over the complement of w and those modes, is estimated by
+    // stochastic Lanczos quadrature: for Rademacher probes z projected onto the complement, Hutchinson
+    // gives E[ z'^T f(M) z' ] = trace of f(M) there, f(mu) = 1/mu, and each quadratic form is the Gauss
+    // quadrature read off an m-step Lanczos tridiagonalization of M.
+    //
+    // The probes are run as blocks, so that each pass over the kernel serves every probe in the block;
+    // the product is bandwidth-bound, and a block of eight costs little more than a single probe. Each
+    // Lanczos step is reorthogonalized against the deflated directions and its two predecessors only.
+    // Full reorthogonalization would hold m vectors per probe -- gigabytes per block at ten taxa -- and
+    // Gauss quadrature from Lanczos without it remains accurate (lost orthogonality duplicates converged
+    // Ritz values, but their quadrature weights split among the copies).
     if (!isSparse)
         {
         // dense fallback: exact when affordable
@@ -2099,102 +2614,189 @@ double MarkovChainAnalyzer::kemenyConstantStochastic(int numProbes, int lanczosS
         return std::numeric_limits<double>::quiet_NaN();
     w /= wnorm;
 
+    // ---- The exact part: the slow modes from the spectral solve ----
+    std::vector<double> slowLambdas;
+    std::vector<Vector> deflation;                                // orthonormal: w, then the slow modes
+    deflation.push_back(w);
+    if (n > denseStateLimit)
+        {
+        SpectralInfo spec = getSpectralInfo(defaultSparseEigenvalues);
+        if (spec.spectral_valid && spec.multiplicity_of_1 > 1)
+            return std::numeric_limits<double>::quiet_NaN();    // reducible: K is not defined
+        if (spec.spectral_valid)
+            {
+            for (Eigen::Index j = 0; j < slowModeValues.size(); ++j)
+                {
+                double lam = slowModeValues(j);
+                if (!(lam < 1.0 - 1e-8))
+                    continue;
+                Vector u = slowModeVectors.col(j);
+                for (int pass = 0; pass < 2; ++pass)              // Gram-Schmidt, twice for safety
+                    for (const Vector& q : deflation)
+                        u -= q.dot(u) * q;
+                double un = u.norm();
+                if (un < 0.5)                                     // not independent of those kept
+                    continue;
+                deflation.push_back(u / un);
+                slowLambdas.push_back(lam);
+                }
+            }
+        else
+            {
+            std::cerr << "Warning: the slow modes of " << name << " are unresolved (" << spec.spectral_status
+                      << "); the Kemeny estimate is purely stochastic and can badly underestimate a chain "
+                         "with a small spectral gap.\n";
+            }
+        }
+
+    double Kslow = 0.0;
+    for (double lam : slowLambdas)
+        Kslow += 1.0 / (1.0 - lam);
+
+    DenseMatrix Q(N, static_cast<Eigen::Index>(deflation.size()));
+    for (size_t j = 0; j < deflation.size(); ++j)
+        Q.col(static_cast<Eigen::Index>(j)) = deflation[j];
+    std::vector<Vector>().swap(deflation);
+
+    using RowBlock = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+    auto deflate = [&](RowBlock& X)
+        {
+        DenseMatrix C = Q.transpose() * X;
+        X.noalias() -= Q * C;
+        };
+
+    // ---- The stochastic part: block SLQ on the complement ----
     int m = std::max(2, std::min(lanczosSteps, static_cast<int>(N) - 1));
+    const int blockSize = 8;
     std::mt19937_64 gen(seed);
     std::uniform_int_distribution<int> coin(0, 1);
-
-    auto applyM = [&](const Vector& x) -> Vector {
-        Vector Sx(x.size());
-        applyS(x.data(), Sx.data());
-        return x - Sx;
-    };
 
     double traceEstimate = 0.0;
     int validProbes = 0;
 
-    for (int p = 0; p < numProbes; ++p)
+    for (int p0 = 0; p0 < numProbes; p0 += blockSize)
         {
-        Vector z(N);
-        for (Eigen::Index i = 0; i < N; ++i)
-            z(i) = coin(gen) ? 1.0 : -1.0;
-        z -= (w.dot(z)) * w;                          // deflate the null space
-        double z2 = z.squaredNorm();
-        if (z2 <= 0.0)
-            continue;
+        int nb = std::min(blockSize, numProbes - p0);
 
-        // m-step Lanczos on M with full reorthogonalization (against the basis and w).
-        std::vector<Vector> V;
-        V.reserve(static_cast<size_t>(m));
-        std::vector<double> alpha, beta;             // beta holds sub-diagonal entries
-        Vector q = z / std::sqrt(z2);
-        Vector qPrev = Vector::Zero(N);
-        double betaPrev = 0.0;
-        int steps = 0;
+        RowBlock Z(N, nb);
+        for (int c = 0; c < nb; ++c)
+            for (Eigen::Index i = 0; i < N; ++i)
+                Z(i, c) = coin(gen) ? 1.0 : -1.0;
+        deflate(Z);
+
+        std::vector<double> z2(static_cast<size_t>(nb));
+        std::vector<char>   active(static_cast<size_t>(nb), 0);
+        RowBlock Qcur = RowBlock::Zero(N, nb), Qprev = RowBlock::Zero(N, nb), SQ(N, nb), R(N, nb);
+        for (int c = 0; c < nb; ++c)
+            {
+            z2[static_cast<size_t>(c)] = Z.col(c).squaredNorm();
+            if (z2[static_cast<size_t>(c)] > 0.0)
+                {
+                Qcur.col(c) = Z.col(c) / std::sqrt(z2[static_cast<size_t>(c)]);
+                active[static_cast<size_t>(c)] = 1;
+                }
+            }
+        Z.resize(0, 0);
+
+        std::vector<std::vector<double>> alpha(static_cast<size_t>(nb)), beta(static_cast<size_t>(nb));
+        std::vector<double> betaPrev(static_cast<size_t>(nb), 0.0);
 
         for (int k = 0; k < m; ++k)
             {
-            q -= (w.dot(q)) * w;
-            double qn = q.norm();
-            if (qn <= 1e-14)
-                break;
-            q /= qn;
-            V.push_back(q);
-
-            Vector Aq = applyM(q);
-            double a = q.dot(Aq);
-            alpha.push_back(a);
-
-            Vector r = Aq - a * q - betaPrev * qPrev;
-            r -= (w.dot(r)) * w;
-            for (const Vector& v : V)
-                r -= (v.dot(r)) * v;                  // full reorthogonalization
-
-            double b = r.norm();
-            ++steps;
-            if (b <= 1e-14 || k == m - 1)
-                break;
-            beta.push_back(b);
-            qPrev = q;
-            betaPrev = b;
-            q = r / b;
-            }
-
-        if (steps < 1)
-            continue;
-
-        Eigen::MatrixXd T = Eigen::MatrixXd::Zero(steps, steps);
-        for (int k = 0; k < steps; ++k)
-            {
-            T(k, k) = alpha[static_cast<size_t>(k)];
-            if (k + 1 < steps)
+            deflate(Qcur);
+            bool anyActive = false;
+            for (int c = 0; c < nb; ++c)
                 {
-                T(k, k + 1) = beta[static_cast<size_t>(k)];
-                T(k + 1, k) = beta[static_cast<size_t>(k)];
+                if (!active[static_cast<size_t>(c)])
+                    {
+                    Qcur.col(c).setZero();
+                    continue;
+                    }
+                double qn = Qcur.col(c).norm();
+                if (qn <= 1e-14)
+                    {
+                    active[static_cast<size_t>(c)] = 0;
+                    Qcur.col(c).setZero();
+                    continue;
+                    }
+                Qcur.col(c) /= qn;
+                anyActive = true;
+                }
+            if (!anyActive)
+                break;
+
+            applySBlock(Qcur.data(), SQ.data(), nb);
+            R = Qcur - SQ;                                        // M q = (I - S) q
+            for (int c = 0; c < nb; ++c)
+                {
+                if (!active[static_cast<size_t>(c)])
+                    continue;
+                double a = Qcur.col(c).dot(R.col(c));
+                alpha[static_cast<size_t>(c)].push_back(a);
+                R.col(c) -= a * Qcur.col(c) + betaPrev[static_cast<size_t>(c)] * Qprev.col(c);
+                }
+            deflate(R);
+            for (int c = 0; c < nb; ++c)
+                {
+                size_t cc = static_cast<size_t>(c);
+                if (!active[cc])
+                    continue;
+                R.col(c) -= Qcur.col(c).dot(R.col(c)) * Qcur.col(c);   // local reorthogonalization
+                R.col(c) -= Qprev.col(c).dot(R.col(c)) * Qprev.col(c);
+                double b = R.col(c).norm();
+                if (b <= 1e-14 || k == m - 1)
+                    {
+                    active[cc] = 0;
+                    continue;
+                    }
+                beta[cc].push_back(b);
+                Qprev.col(c) = Qcur.col(c);
+                betaPrev[cc] = b;
+                Qcur.col(c) = R.col(c) / b;
                 }
             }
 
-        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(T);
-        if (es.info() != Eigen::Success)
-            continue;
-        Eigen::VectorXd theta = es.eigenvalues();
-        Eigen::MatrixXd Y = es.eigenvectors();
-
-        double quad = 0.0;
-        for (int k = 0; k < steps; ++k)
+        for (int c = 0; c < nb; ++c)
             {
-            double th = theta(k);
-            double tau0 = Y(0, k);
-            if (th > 1e-12)                           // skip the (deflated) null direction
-                quad += tau0 * tau0 / th;
-            }
+            size_t cc = static_cast<size_t>(c);
+            int steps = static_cast<int>(alpha[cc].size());
+            if (steps < 1)
+                continue;
 
-        traceEstimate += z2 * quad;
-        ++validProbes;
+            Eigen::MatrixXd T = Eigen::MatrixXd::Zero(steps, steps);
+            for (int k = 0; k < steps; ++k)
+                {
+                T(k, k) = alpha[cc][static_cast<size_t>(k)];
+                if (k + 1 < steps)
+                    {
+                    T(k, k + 1) = beta[cc][static_cast<size_t>(k)];
+                    T(k + 1, k) = beta[cc][static_cast<size_t>(k)];
+                    }
+                }
+
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(T);
+            if (es.info() != Eigen::Success)
+                continue;
+            Eigen::VectorXd theta = es.eigenvalues();
+            Eigen::MatrixXd Y = es.eigenvectors();
+
+            double quad = 0.0;
+            for (int k = 0; k < steps; ++k)
+                {
+                double th = theta(k);
+                double tau0 = Y(0, k);
+                if (th > 1e-12)                                   // skip the (deflated) null direction
+                    quad += tau0 * tau0 / th;
+                }
+
+            traceEstimate += z2[cc] * quad;
+            ++validProbes;
+            }
         }
 
     if (validProbes == 0)
         return std::numeric_limits<double>::quiet_NaN();
-    double K = traceEstimate / static_cast<double>(validProbes);
+    double K = Kslow + traceEstimate / static_cast<double>(validProbes);
     // Kemeny's constant is strictly positive for an irreducible reversible chain; a negative
     // estimate means M = I - S has an eigenvalue <= 0 (spectral radius of P above 1), i.e. the
     // kernel is not pi-reversible. Report NaN rather than a spurious large-negative value.
@@ -2312,7 +2914,7 @@ MarkovChainAnalyzer::Vector MarkovChainAnalyzer::meanFirstPassageTimesToState(Ei
     Vector b  = piSqrt;
     b(target) = 0.0;
 
-    Vector diagP = isSparse ? Vector(P_sparse.diagonal()) : Vector(P_dense.diagonal());
+    Vector diagP = isSparse ? Vector(P_row_sparse.diagonal()) : Vector(P_dense.diagonal());
     Vector diagonal(N);
     for (Eigen::Index i = 0; i < N; ++i)
         diagonal(i) = std::max(1.0e-12, 1.0 - diagP(i));
@@ -2402,7 +3004,7 @@ double MarkovChainAnalyzer::meanHittingTimeToSet(const std::vector<Eigen::Index>
     if (isSparse) 
         {
         std::vector<Eigen::Triplet<double>> triplets;
-        triplets.reserve(static_cast<size_t>(P_sparse.nonZeros() + N));
+        triplets.reserve(static_cast<size_t>(P_row_sparse.nonZeros() + N));
         ensureRowSparse();
         for (Eigen::Index i = 0; i < N; i++) 
             {
@@ -2475,7 +3077,7 @@ double MarkovChainAnalyzer::meanHittingTimeToStateQuiet(Eigen::Index target) con
     if (isSparse) 
         {
         std::vector<Eigen::Triplet<double>> triplets;
-        triplets.reserve(static_cast<size_t>(P_sparse.nonZeros() + N));
+        triplets.reserve(static_cast<size_t>(P_row_sparse.nonZeros() + N));
         ensureRowSparse();
         for (Eigen::Index i = 0; i < N; ++i) 
             {
@@ -2536,7 +3138,7 @@ double MarkovChainAnalyzer::meanHittingTimeToSetQuiet(const std::vector<Eigen::I
     if (isSparse) 
         {
         std::vector<Eigen::Triplet<double>> triplets;
-        triplets.reserve(static_cast<size_t>(P_sparse.nonZeros() + N));
+        triplets.reserve(static_cast<size_t>(P_row_sparse.nonZeros() + N));
         ensureRowSparse();
         for (Eigen::Index i = 0; i < N; ++i) 
             {
@@ -2860,18 +3462,10 @@ bool MarkovChainAnalyzer::spectralModesForFunctionals(Eigen::VectorXd& evals, De
     // otherwise the leading slow modes, which carry the dominant contribution to IACT / chi^2.
     if (n <= denseStateLimit)
         {
-        Eigen::VectorXd ea;
-        DenseMatrix Ua;
-        if (!fullSymmetricEigensystem(ea, Ua))
+        if (!ensureDenseEigensystem())
             return false;
-        Eigen::Index m = ea.size();
-        evals.resize(m);
-        U.resize(Ua.rows(), m);
-        for (Eigen::Index i = 0; i < m; ++i)
-            {
-            evals(i) = ea(m - 1 - i);
-            U.col(i) = Ua.col(m - 1 - i);
-            }
+        evals = denseEigenvalues;
+        U = denseEigenvectors;
         return true;
         }
     int kL = std::max(defaultSparseEigenvalues, 16);
@@ -2893,7 +3487,7 @@ double MarkovChainAnalyzer::stationaryDiscrepancy(void) const {
 
     Vector piP;
     if (isSparse)
-        piP = P_sparse.transpose() * pi;
+        piP = P_row_sparse.transpose() * pi;
     else
         piP = P_dense.transpose() * pi;
     return (piP - pi).norm();
@@ -2925,7 +3519,7 @@ MarkovChainAnalyzer::SparseMatrix MarkovChainAnalyzer::symmetrizedSparse(void) c
     // downstream solver sees an exactly symmetric operator.
     Vector s    = pi.cwiseSqrt();
     Vector sinv = s.cwiseInverse();
-    SparseMatrix S = s.asDiagonal() * P_sparse * sinv.asDiagonal();
+    SparseMatrix S = s.asDiagonal() * P_row_sparse * sinv.asDiagonal();
     SparseMatrix St = SparseMatrix(S.transpose());
     S = 0.5 * (S + St);
     S.makeCompressed();
@@ -2934,14 +3528,14 @@ MarkovChainAnalyzer::SparseMatrix MarkovChainAnalyzer::symmetrizedSparse(void) c
 
 double MarkovChainAnalyzer::transitionProbability(Eigen::Index i, Eigen::Index j) const {
 
-    return isSparse ? P_sparse.coeff(i, j) : P_dense(i, j);
+    return isSparse ? P_row_sparse.coeff(i, j) : P_dense(i, j);
 }
 
 bool MarkovChainAnalyzer::verifyStationary(double tol) const {
 
     Vector piP;
     if (isSparse)
-        piP = P_sparse.transpose() * pi;
+        piP = P_row_sparse.transpose() * pi;
     else
         piP = P_dense.transpose() * pi;
     double err = (piP - pi).norm();
@@ -3111,29 +3705,43 @@ void MarkovChainAnalyzer::writeFullEigenSystemTsv(const std::string& filePrefix,
     // The MH kernel is reversible, so we diagonalize the symmetric S = D^{1/2} P D^{-1/2}.
     // Its eigenvalues are exactly those of P (real), and the pi-orthonormal right eigenvectors
     // of P are recovered as v_j = D^{-1/2} u_j. The imag columns are retained (== 0) so the
-    // file schema matches earlier output.
-    DenseMatrix S = symmetrizedDense();
-    Eigen::SelfAdjointEigenSolver<DenseMatrix> es(S, writeEigenvectors ? Eigen::ComputeEigenvectors : Eigen::EigenvaluesOnly);
-    if (es.info() != Eigen::Success)
+    // file schema matches earlier output. The eigensystem is the cached one shared with the other
+    // dense routines (descending algebraic order, lambda_1 = 1 first).
+    if (!ensureDenseEigensystem())
         throw std::runtime_error("Symmetric eigensystem calculation failed for: " + filePrefix);
 
-    // Descending algebraic order (lambda_1 = 1 first).
-    Eigen::VectorXd evalsAsc = es.eigenvalues();
-    Eigen::Index N = evalsAsc.size();
-    Eigen::VectorXd evals(N);
-    for (Eigen::Index k = 0; k < N; ++k)
-        evals(k) = evalsAsc(N - 1 - k);
-
-    DenseMatrix P;
-    DenseMatrix V;          // pi-orthonormal right eigenvectors of P, columns aligned with evals
+    const Eigen::VectorXd& evals = denseEigenvalues;
+    const DenseMatrix&     U     = denseEigenvectors;
+    Eigen::Index N = evals.size();
     Vector sinv = pi.cwiseSqrt().cwiseInverse();
+
+    // Residuals ||P v_k - lambda_k v_k|| / ||v_k||, v_k = D^{-1/2} u_k. One matrix-vector product per
+    // eigenvector made this another O(n^3) pass done a column at a time; it is formed instead as a
+    // matrix-matrix product over blocks of columns (multithreaded dgemm where LAPACK is available).
+    Eigen::VectorXd residuals = Eigen::VectorXd::Constant(N, std::numeric_limits<double>::quiet_NaN());
     if (writeEigenvectors)
         {
-        P = denseTransitionMatrix();
-        DenseMatrix U = es.eigenvectors();
-        V.resize(U.rows(), N);
-        for (Eigen::Index k = 0; k < N; ++k)
-            V.col(k) = sinv.cwiseProduct(U.col(N - 1 - k));
+        DenseMatrix P = denseTransitionMatrix();
+        const Eigen::Index blockCols = 512;
+        for (Eigen::Index c0 = 0; c0 < N; c0 += blockCols)
+            {
+            Eigen::Index nc = std::min(blockCols, N - c0);
+            DenseMatrix Vb = sinv.asDiagonal() * U.middleCols(c0, nc);
+            DenseMatrix PVb(N, nc);
+#if MCA_USE_LAPACK
+            int m = static_cast<int>(N), ncols = static_cast<int>(nc), kk = static_cast<int>(N);
+            const double one = 1.0, zero = 0.0;
+            const char noTrans = 'N';
+            dgemm_(&noTrans, &noTrans, &m, &ncols, &kk, &one, P.data(), &m, Vb.data(), &kk, &zero, PVb.data(), &m);
+#else
+            PVb.noalias() = P * Vb;
+#endif
+            for (Eigen::Index j = 0; j < nc; ++j)
+                {
+                double denom = std::max(Vb.col(j).norm(), std::numeric_limits<double>::min());
+                residuals(c0 + j) = (PVb.col(j) - evals(c0 + j) * Vb.col(j)).norm() / denom;
+                }
+            }
         }
 
     std::ofstream evalOut(filePrefix + ".eigenvalues.tsv");
@@ -3144,15 +3752,8 @@ void MarkovChainAnalyzer::writeFullEigenSystemTsv(const std::string& filePrefix,
     evalOut << "eigen_index\treal\timag\tmodulus\tresidual\n";
     for (Eigen::Index k = 0; k < N; ++k)
         {
-        double residual = std::numeric_limits<double>::quiet_NaN();
-        if (writeEigenvectors)
-            {
-            Eigen::VectorXd v = V.col(k);
-            double denom = std::max(v.norm(), std::numeric_limits<double>::min());
-            residual = (P * v - evals(k) * v).norm() / denom;
-            }
         evalOut << k << "\t" << evals(k) << "\t" << 0.0
-                << "\t" << std::abs(evals(k)) << "\t" << residual << "\n";
+                << "\t" << std::abs(evals(k)) << "\t" << residuals(k) << "\n";
         }
 
     if (!writeEigenvectors)
@@ -3164,13 +3765,13 @@ void MarkovChainAnalyzer::writeFullEigenSystemTsv(const std::string& filePrefix,
 
     vecOut << std::setprecision(17);
     vecOut << "eigen_index\tstate_index\ttree_hash\treal\timag\n";
-    for (Eigen::Index k = 0; k < V.cols(); ++k)
+    for (Eigen::Index k = 0; k < U.cols(); ++k)
         {
-        for (Eigen::Index i = 0; i < V.rows(); ++i)
+        for (Eigen::Index i = 0; i < U.rows(); ++i)
             {
             uint64_t h = (static_cast<size_t>(i) < stateHashes.size()) ? stateHashes[static_cast<size_t>(i)] : 0;
             vecOut << k << "\t" << i << "\t" << h << "\t"
-                   << V(i, k) << "\t" << 0.0 << "\n";
+                   << sinv(i) * U(i, k) << "\t" << 0.0 << "\n";
             }
         }
 }

@@ -12,16 +12,54 @@
 #include <vector>
 #include "TreeCache.hpp"
 
+struct TreeSpaceNode;
+
+// The neighbors of one vertex of the landscape graph: a view of its row in TreeSpace's adjacency
+// array, which holds each undirected edge once per endpoint, duplicates removed, in a fixed order. It
+// replaces a std::set<TreeSpaceNode*> per vertex, which at ten taxa was some 28 GB of tree nodes for
+// the TBR graph; the array is 2.4 GB.
+class TreeSpaceNeighbors {
+
+    public:
+        class iterator {
+
+            public:
+                                    iterator(TreeSpaceNode* n, const uint32_t* e) : nodes(n), pos(e) { }
+                TreeSpaceNode*      operator*(void) const;
+                iterator&           operator++(void) { ++pos; return *this; }
+                bool                operator!=(const iterator& o) const { return pos != o.pos; }
+
+            private:
+                TreeSpaceNode*      nodes;
+                const uint32_t*     pos;
+        };
+
+                                TreeSpaceNeighbors(void) = default;
+                                TreeSpaceNeighbors(TreeSpaceNode* n, const uint32_t* e, uint32_t c) : nodes(n), entries(e), count(c) { }
+        size_t                  size(void) const { return count; }
+        bool                    empty(void) const { return count == 0; }
+        iterator                begin(void) const { return iterator(nodes, entries); }
+        iterator                end(void) const { return iterator(nodes, entries + count); }
+
+    private:
+        TreeSpaceNode*          nodes = nullptr;
+        const uint32_t*         entries = nullptr;
+        uint32_t                count = 0;
+};
+
 struct TreeSpaceNode {
 
     uint64_t                    treeHash;
-    float                       lnL;
+    double                      lnL;                // was float: near -5,000 a float resolves only ~5e-4,
+                                                    // enough to flip or tie steepest-ascent comparisons
     int                         peakId;
     TreeSpaceNode*              peakPtr;
     int                         distance;
     bool                        isPeak;
-    std::set<TreeSpaceNode*>    neighbors;
+    TreeSpaceNeighbors          neighbors;
 };
+
+inline TreeSpaceNode* TreeSpaceNeighbors::iterator::operator*(void) const { return nodes + *pos; }
 
 struct PeakInfo {
 
@@ -168,8 +206,17 @@ class TreeSpace {
         void                    printPosterior(std::string fileName);
         void                    printPosterior(TreeSamples* samples);
         void                    writeRuggednessStatistics(std::string fileName);
-    
+
+                                // Free the adjacency of the landscape graph. Everything computed from it
+                                // that later callers read -- the peaks, the ascent targets, and the landscape
+                                // records -- is kept; anything that would walk the graph again is refused.
+        void                    releaseGraph(void);
+
     private:
+        void                    buildGraph(void);
+        void                    ensureAscent(void);
+        void                    requireGraph(const char* caller) const;
+        uint32_t                nodeIndex(const TreeSpaceNode* n) const { return static_cast<uint32_t>(n - nodes.data()); }
         void                    adjacentTreeDistances(uint64_t treeHash);
         void                    calculateDistances(uint64_t treeHash);
         void                    characterizeBasins(std::unordered_map<uint64_t,int>& basins);
@@ -186,6 +233,15 @@ class TreeSpace {
         int                     steepestAscentLength(uint64_t startTree);
         uint64_t                steepestAscent(uint64_t startTree);
         TreeCache*              treeCache;
+        std::vector<TreeSpaceNode> nodes;              // one per tree, at the tree's TreeInfo::index
+        std::vector<uint64_t>   adjOffset;             // the landscape graph: row of node i is
+        std::vector<uint32_t>   adjCount;              //   adj[adjOffset[i] .. adjOffset[i] + adjCount[i])
+        std::vector<uint32_t>   adj;
+        bool                    graphReleased = false;
+        std::vector<uint32_t>   ascentNext;            // memoized steepest ascent: the best uphill
+        std::vector<uint32_t>   ascentPeak;            //   neighbor (or self), the peak reached, and
+        std::vector<int>        ascentLength;          //   the number of steps taken to reach it
+        bool                    ascentReady = false;
         TreeNodesMap            treeNodes;
         PeakMap                 peaks;
         TreeProbMap             treeProbabilities;

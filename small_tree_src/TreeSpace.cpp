@@ -70,53 +70,8 @@ TreeSpace::TreeSpace(TreeCache* tc, std::string st) : treeCache(tc), swapType(st
         
     // construct graph
     TreeCacheMap& tCache = treeCache->getCache();
+    buildGraph();
 
-    int barWidth = 60, numAsterices = 0;
-    size_t numTrees = tCache.size();
-    size_t treeCnt = 0;
-
-    std::cout << "   Constructing tree space graph:" << std::endl;
-    std::cout << "   * [";
-    for (int i=0; i<barWidth; i++)
-        {
-        if ((i+1) % (int)(barWidth*0.1) == 0 && i+1 != barWidth)
-            std::cout << "|";
-        else
-            std::cout << "-";
-        }
-    std::cout << "]" << std::endl;
-    std::cout << "   * [";
-
-    RunningStats degreeStats;
-    initRunningStats(&degreeStats);
-    for (auto& [key,val] : tCache)
-        {
-        TreeSpaceNode* thisTree = getTree(key);
-        std::vector<TreeInfo*>& ndeNeighbors = val->neighbors;
-        for (size_t i=0; i<ndeNeighbors.size(); i++)
-            {
-            TreeSpaceNode* neighboringTree = getTree(ndeNeighbors[i]->hash);
-            neighboringTree->neighbors.insert(thisTree);
-            thisTree->neighbors.insert(neighboringTree);
-            }
-            
-        averageDegree += thisTree->neighbors.size();
-        addObservation(&degreeStats, thisTree->neighbors.size());
-
-        treeCnt++;
-
-        double progress = static_cast<double>(treeCnt) / numTrees;
-        int filledWidth = static_cast<int>(progress * barWidth);
-
-        for (int i=0; i<filledWidth-numAsterices; i++)
-            std::cout << "*" << std::flush;
-        numAsterices = filledWidth;
-        }
-    averageDegree = mean(&degreeStats);
-    varianceDegree = sampleVariance(&degreeStats);
-
-    std::cout << "]" << std::endl << std::endl;        
-       
     // calculate the exact posterior probability
     double bestLnL = std::numeric_limits<double>::lowest();
     for (auto& [key,val] : tCache)
@@ -147,14 +102,200 @@ TreeSpace::TreeSpace(TreeCache* tc, std::string st) : treeCache(tc), swapType(st
 TreeSpace::~TreeSpace(void) {
 
     clearPeaks();
-    for (auto& [key,val] : treeNodes)
-        delete val;
+}
+
+// The landscape graph: an undirected edge between two trees whenever either lists the other as a
+// neighbor under this move set, each edge stored once per endpoint and duplicates removed. Rows are
+// sorted by tree index, which fixes the order in which ties for the best neighbor are broken (earlier
+// versions iterated a std::set ordered by node address). The move-set neighborhoods are symmetric,
+// so a row is just the tree's own neighborhood with duplicates removed; the symmetry is checked, and
+// any missing reverse edge is added, so the result does not rely on it.
+void TreeSpace::buildGraph(void) {
+
+    size_t numTrees = treeCache->size();
+    nodes.assign(numTrees, TreeSpaceNode());
+    treeNodes.clear();
+    treeNodes.reserve(numTrees);
+    for (size_t i=0; i<numTrees; i++)
+        {
+        TreeInfo* info = treeCache->treeAt(static_cast<uint32_t>(i));
+        TreeSpaceNode& node = nodes[i];
+        node.treeHash = info->hash;
+        node.lnL      = info->lnLikelihood;
+        node.peakId   = -1;
+        node.peakPtr  = nullptr;
+        node.distance = -1;
+        node.isPeak   = false;
+        treeNodes.insert( std::make_pair(info->hash, &node) );
+        }
+
+    int barWidth = 60, numAsterices = 0;
+    std::cout << "   Constructing tree space graph:" << std::endl;
+    std::cout << "   * [";
+    for (int i=0; i<barWidth; i++)
+        {
+        if ((i+1) % (int)(barWidth*0.1) == 0 && i+1 != barWidth)
+            std::cout << "|";
+        else
+            std::cout << "-";
+        }
+    std::cout << "]" << std::endl;
+    std::cout << "   * [";
+
+    adjOffset.assign(numTrees, 0);
+    adjCount.assign(numTrees, 0);
+    std::vector<uint32_t>().swap(adj);
+    adj.reserve(treeCache->numNeighborEntries());          // an upper bound: duplicates are dropped
+    std::vector<uint32_t> row;
+    for (size_t i=0; i<numTrees; i++)
+        {
+        NeighborList nbrs = treeCache->neighbors(treeCache->treeAt(static_cast<uint32_t>(i)));
+        row.clear();
+        for (uint32_t k=0; k<nbrs.size(); k++)
+            if (nbrs.indexAt(k) != i)
+                row.push_back(nbrs.indexAt(k));
+        std::sort(row.begin(), row.end());
+        row.erase(std::unique(row.begin(), row.end()), row.end());
+        adjOffset[i] = adj.size();
+        adjCount[i]  = static_cast<uint32_t>(row.size());
+        adj.insert(adj.end(), row.begin(), row.end());
+
+        int filledWidth = static_cast<int>(static_cast<double>(i + 1) / numTrees * barWidth);
+        for (int b=0; b<filledWidth-numAsterices; b++)
+            std::cout << "*" << std::flush;
+        numAsterices = filledWidth;
+        }
+    std::cout << "]" << std::endl << std::endl;
+
+    // symmetry: every edge i -> j must also appear as j -> i
+    std::vector<std::pair<uint32_t,uint32_t>> missing;
+    for (size_t i=0; i<numTrees; i++)
+        {
+        const uint32_t* ri = adj.data() + adjOffset[i];
+        for (uint32_t k=0; k<adjCount[i]; k++)
+            {
+            uint32_t j = ri[k];
+            const uint32_t* rj = adj.data() + adjOffset[j];
+            if (std::binary_search(rj, rj + adjCount[j], static_cast<uint32_t>(i)) == false)
+                missing.push_back(std::make_pair(j, static_cast<uint32_t>(i)));
+            }
+        }
+    if (missing.empty() == false)
+        {
+        std::cout << "   * Adding " << missing.size() << " reverse edges missing from the " << swapType
+                  << " neighborhoods" << std::endl;
+        std::sort(missing.begin(), missing.end());
+        std::vector<uint32_t> merged;
+        std::vector<uint64_t> newOffset(numTrees, 0);
+        merged.reserve(adj.size() + missing.size());
+        size_t m = 0;
+        for (size_t i=0; i<numTrees; i++)
+            {
+            row.assign(adj.begin() + adjOffset[i], adj.begin() + adjOffset[i] + adjCount[i]);
+            while (m < missing.size() && missing[m].first == i)
+                row.push_back(missing[m++].second);
+            std::sort(row.begin(), row.end());
+            row.erase(std::unique(row.begin(), row.end()), row.end());
+            newOffset[i] = merged.size();
+            adjCount[i]  = static_cast<uint32_t>(row.size());
+            merged.insert(merged.end(), row.begin(), row.end());
+            }
+        adj.swap(merged);
+        adjOffset.swap(newOffset);
+        }
+
+    RunningStats degreeStats;
+    initRunningStats(&degreeStats);
+    for (size_t i=0; i<numTrees; i++)
+        {
+        nodes[i].neighbors = TreeSpaceNeighbors(nodes.data(), adj.data() + adjOffset[i], adjCount[i]);
+        addObservation(&degreeStats, adjCount[i]);
+        }
+    averageDegree = mean(&degreeStats);
+    varianceDegree = sampleVariance(&degreeStats);
+    graphReleased = false;
+    ascentReady = false;
+}
+
+void TreeSpace::releaseGraph(void) {
+
+    ensureAscent();                                        // kept: characterize() and the peaks use it
+    for (TreeSpaceNode& node : nodes)
+        node.neighbors = TreeSpaceNeighbors();
+    std::vector<uint64_t>().swap(adjOffset);
+    std::vector<uint32_t>().swap(adjCount);
+    std::vector<uint32_t>().swap(adj);
+    graphReleased = true;
+}
+
+void TreeSpace::requireGraph(const char* caller) const {
+
+    if (graphReleased == true)
+        Msg::error(std::string("TreeSpace::") + caller + " needs the landscape graph, which has been released");
+}
+
+// Steepest ascent from every tree at once. Each tree's best neighbor is found once -- the first
+// neighbor, in row order, of highest likelihood, exactly the choice findBestNeighbor makes -- and the
+// peak and path length then follow by walking those links with memoization, so the whole landscape
+// costs one pass over the edges. Earlier versions walked the full path from every tree separately,
+// re-scanning each neighborhood along the way, twice over (for the peaks and for the ascent lengths).
+void TreeSpace::ensureAscent(void) {
+
+    if (ascentReady == true)
+        return;
+    requireGraph("ensureAscent");
+
+    size_t numTrees = nodes.size();
+    ascentNext.assign(numTrees, 0);
+    for (size_t i=0; i<numTrees; i++)
+        {
+        TreeSpaceNode* cur = &nodes[i];
+        uint32_t next = static_cast<uint32_t>(i);
+        if (cur->neighbors.empty() == false)
+            {
+            TreeSpaceNode* best = findBestNeighbor(cur);
+            if (best->lnL > cur->lnL)
+                next = nodeIndex(best);
+            }
+        ascentNext[i] = next;
+        }
+
+    const uint32_t unknown = std::numeric_limits<uint32_t>::max();
+    ascentPeak.assign(numTrees, unknown);
+    ascentLength.assign(numTrees, -1);
+    std::vector<uint32_t> path;
+    for (size_t i=0; i<numTrees; i++)
+        {
+        if (ascentPeak[i] != unknown)
+            continue;
+        path.clear();
+        uint32_t u = static_cast<uint32_t>(i);
+        while (ascentPeak[u] == unknown && ascentNext[u] != u)
+            {
+            path.push_back(u);
+            u = ascentNext[u];
+            }
+        if (ascentPeak[u] == unknown)                      // u is a peak
+            {
+            ascentPeak[u] = u;
+            ascentLength[u] = 0;
+            }
+        uint32_t peak = ascentPeak[u];
+        int length = ascentLength[u];
+        for (size_t k=path.size(); k-- > 0; )
+            {
+            ascentPeak[path[k]] = peak;
+            ascentLength[path[k]] = ++length;
+            }
+        }
+    ascentReady = true;
 }
 
 void TreeSpace::adjacentTreeDistances(uint64_t treeHash) {
 
+    requireGraph("adjacentTreeDistances");
     TreeSpaceNode* p = getTree(treeHash);
-    std::set<TreeSpaceNode*>& pNeighbors = p->neighbors;
+    const TreeSpaceNeighbors& pNeighbors = p->neighbors;
     
     if (p->distance == -1)
         {
@@ -176,6 +317,7 @@ void TreeSpace::adjacentTreeDistances(uint64_t treeHash) {
 
 void TreeSpace::calculateDistances(uint64_t treeHash) {
 
+    requireGraph("calculateDistances");
     for (auto& [key,val] : treeNodes)
         val->distance = -1;
         
@@ -186,6 +328,7 @@ void TreeSpace::calculateDistances(uint64_t treeHash) {
 void TreeSpace::characterize(void) {
 
     clearPeaks();
+    ensureAscent();
 
     // find the peaks
     for (auto& [key,val] : treeNodes)
@@ -256,36 +399,11 @@ void TreeSpace::characterize(void) {
     if (peaks.size() > 1)
         dominanceRatio = firstProb / secondProb;
         
-    // number of graph edges connecting each pair of basins (basin adjacency)
-    int nPeaks = (int)peaks.size();
-    std::vector<int> peakPaths(nPeaks * nPeaks, 0);
+    // The count of graph edges between each pair of basins (peakPaths, an nPeaks x nPeaks array) was
+    // computed here for the python graph output disabled below, and nothing else read it. It is no
+    // longer computed: on a rugged ten-taxon landscape with tens of thousands of peaks the array alone
+    // ran to gigabytes. Restore it from version control together with that output if it is wanted.
 
-    std::unordered_map<uint64_t,uint64_t> assignment = computePeakAssignments();
-    std::unordered_map<uint64_t,int> peakHashToId;
-    for (const auto& [key, peak] : peaks)
-        peakHashToId[key] = peak->getPeakId();
-
-    for (const auto& [hash, node] : treeNodes)
-        {
-        auto ia = assignment.find(hash);
-        if (ia == assignment.end())
-            continue;
-        int idA = peakHashToId[ia->second];
-        for (TreeSpaceNode* nb : node->neighbors)
-            {
-            if (hash > nb->treeHash)
-                continue;                       // count each undirected edge once
-            auto ib = assignment.find(nb->treeHash);
-            if (ib == assignment.end())
-                continue;
-            int idB = peakHashToId[ib->second];
-            if (idA == idB)
-                continue;                       // same basin, not a crossing edge
-            peakPaths[idA * nPeaks + idB]++;
-            peakPaths[idB * nPeaks + idA]++;
-            }
-        }
-        
     // print peak information
     std::cout << "   Peaks (" << swapType << "):" << std::endl;
     sum = 0.0;
@@ -409,6 +527,7 @@ const TreeLandscapeMap& TreeSpace::landscapeByHash(uint64_t mapHash, double cred
 
     if (landscapeReady == true && landscapeMapHash == mapHash && landscapeCredibleMass == credibleMass)
         return landscapeRecords;
+    requireGraph("landscapeByHash");
 
     if (peaks.empty() == true)
         characterize();
@@ -485,6 +604,7 @@ const TreeLandscapeMap& TreeSpace::landscapeByHash(uint64_t mapHash, double cred
 
 LocalSummary TreeSpace::computeLocalSummary(void) {
 
+    requireGraph("computeLocalSummary");
     LocalSummary stats;
     stats.numTrees = treeNodes.size();
 
@@ -677,6 +797,7 @@ AscentSummary TreeSpace::computeAscentSummary(void) {
 
 CredibleComponentSummary TreeSpace::computeCredible95ComponentSummary(void) {
 
+    requireGraph("computeCredible95ComponentSummary");
     CredibleComponentSummary stats;
 
     std::vector<uint64_t> credibleVec = credibleSet(0.95);
@@ -744,6 +865,7 @@ CredibleComponentSummary TreeSpace::computeCredible95ComponentSummary(void) {
 
 BarrierSummary TreeSpace::computeBarrierSummary(std::vector<SaddleInfo>& saddles) {
 
+    requireGraph("computeBarrierSummary");
     if (peaks.empty() == true)
         characterize();
 
@@ -1024,12 +1146,12 @@ Peak* TreeSpace::findPeak(uint64_t treeHash) {
 
 Peak* TreeSpace::findPeakForTreeWithHash(uint64_t treeHash) {
 
-    for (auto& [key,val] : peaks)
-        {
-        if (val->isTreeInPeak(treeHash) == true)
-            return val;
-        }
-    return nullptr;
+    // Every tree belongs to the basin of the peak its steepest ascent reaches, which is how the peaks'
+    // member sets were filled, so the basin is found directly rather than by testing every peak.
+    TreeNodesMap::iterator it = treeNodes.find(treeHash);
+    if (it == treeNodes.end() || ascentReady == false)
+        return nullptr;
+    return findPeak(nodes[ascentPeak[nodeIndex(it->second)]].treeHash);
 }
 
 Peak* TreeSpace::findPeakWithId(int id) {
@@ -1046,16 +1168,7 @@ TreeSpaceNode* TreeSpace::getTree(uint64_t treeHash) {
 
     TreeNodesMap::iterator it = treeNodes.find(treeHash);
     if (it == treeNodes.end())
-        {
-        TreeSpaceNode* newNode = new TreeSpaceNode;
-        TreeInfo* info = treeCache->getTreeInfo(treeHash);
-        if (info == nullptr)
-            Msg::error("Could not find tree when constructing tree space");
-        newNode->treeHash = treeHash;
-        newNode->lnL = info->lnLikelihood;
-        treeNodes.insert( std::make_pair(treeHash,newNode) );
-        return newNode;
-        }
+        Msg::error("Could not find tree in tree space");
     return it->second;
 }
 
@@ -1069,6 +1182,7 @@ double TreeSpace::getTreeProbabiity(uint64_t treeHash) {
 
 int TreeSpace::graphDistance(const TreeSpaceNode* a, const TreeSpaceNode* b) {
 
+    requireGraph("graphDistance");
     if (a == nullptr || b == nullptr)
         return -1;
 
@@ -1194,45 +1308,15 @@ void TreeSpace::printPosterior(TreeSamples* samples) {
 
 uint64_t TreeSpace::steepestAscent(uint64_t startTree) {
 
-    TreeSpaceNode* currentTree = getTree(startTree);
-    bool stopWalk = false;
-    do {
-        TreeSpaceNode* bestNeighbor = findBestNeighbor(currentTree);
-        if (bestNeighbor == nullptr)
-            Msg::error("bestNeighbor is NULL");
-        if (bestNeighbor->lnL > currentTree->lnL)
-            currentTree = bestNeighbor;
-        else 
-            stopWalk = true;
-
-        } while(stopWalk == false);
-
-    return currentTree->treeHash;
+    // the end of the steepest-ascent walk from startTree, read from the memoized walk (ensureAscent)
+    ensureAscent();
+    return nodes[ascentPeak[nodeIndex(getTree(startTree))]].treeHash;
 }
-
-
-
 
 int TreeSpace::steepestAscentLength(uint64_t startTree) {
 
-    TreeSpaceNode* currentTree = getTree(startTree);
-    int length = 0;
-    bool stopWalk = false;
-    do {
-        TreeSpaceNode* bestNeighbor = findBestNeighbor(currentTree);
-        if (bestNeighbor == nullptr)
-            Msg::error("bestNeighbor is NULL");
-        if (bestNeighbor->lnL > currentTree->lnL)
-            {
-            currentTree = bestNeighbor;
-            length++;
-            }
-        else
-            stopWalk = true;
-
-        } while(stopWalk == false);
-
-    return length;
+    ensureAscent();
+    return ascentLength[nodeIndex(getTree(startTree))];
 }
 
 void TreeSpace::writeRuggednessStatistics(std::string fileName) {

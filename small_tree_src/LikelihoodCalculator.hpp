@@ -26,22 +26,11 @@ class LikelihoodCalculator : public LikelihoodTask {
         void                        setOffset(size_t x) { offset = x; }
         void                        setTree(Tree* t);
         void                        setTreeInfo(TreeInfo* ti) { treeInfo = ti; }
-
-                                    // Marginal-likelihood switch. When on, lnLikelihood() also integrates the
-                                    // branch lengths out under an IID Exp(exponentialPriorRate) prior by a
-                                    // Laplace approximation and stores the result on the tree's TreeInfo. Set
-                                    // once before the parallel likelihood pass; it is only read there.
         static void                 setComputeMarginalLikelihood(bool x) { computeMarginal = x; }
         static bool                 getComputeMarginalLikelihood(void) { return computeMarginal; }
         static void                 setExponentialPriorRate(double lambda) { exponentialPriorRate = lambda; }
-                                    // Hessian used for the Laplace volume term / covariance:
-                                    // 0 = diagonal only, 1 = full, by finite differences of the gradient.
         static void                 setMarginalHessianMethod(int m) { hessianMethod = m; }
         static int                  getMarginalHessianMethod(void) { return hessianMethod; }
-                                    // Fill the theta-space (log branch length) log-posterior Hessian at the tree's
-                                    // current branch lengths, row-major d x d; returns the number of branches d.
-                                    // (-H) is the Gaussian precision of the Laplace fit; its inverse is the
-                                    // branch-length covariance.
         int                         branchHessianTheta(std::vector<double>& H);
     
     private:

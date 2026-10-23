@@ -47,6 +47,7 @@ class Alignment {
         void                                        createDnaMatrix(NxsCharactersBlock* charblock);
         int                                         nucID(char nuc);
         char                                        toNuc(int charCode);
+        void                                        translateToJcPattern(std::vector<int>& pattern);
         int**                                       matrix;
         int*                                        patternCount;
         int                                         numTaxa;

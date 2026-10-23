@@ -2,6 +2,7 @@
 #define MarkovChainAnalyzer_hpp
 
 #include <cassert>
+#include <chrono>
 #include <functional>
 #include <complex>
 #include <iostream>
@@ -237,7 +238,7 @@ class MarkovChainAnalyzer {
         void                            writeTsvRow(std::ostream& os, const std::string& moveType, double power, double epsilon = 1e-6) const;
         void                            printExtendedReport(std::ostream& os = std::cout) const;
         void                            printReport(std::ostream& os = std::cout) const;
-        const SparseMatrix&             getTransitionMatrixSparse(void) const { return P_sparse; }
+        const RowSparseMatrix&          getTransitionMatrixSparse(void) const { return P_row_sparse; }
         const DenseMatrix&              getTransitionMatrixDense(void) const { return P_dense; }
         const Vector&                   getPosterior(void) const { return pi; }
         size_t                          numStates(void) const { return n; }
@@ -279,15 +280,20 @@ class MarkovChainAnalyzer {
         SparseMatrix                    symmetrizedSparse(void) const;
         DenseMatrix                     symmetrizedDense(void) const;
         bool                            fullSymmetricEigensystem(Eigen::VectorXd& evals, DenseMatrix& U) const;
+        bool                            ensureDenseEigensystem(void) const;
+        bool                            shiftInvertTopModes(int k, const Vector& wUnit, int maxRestarts, std::chrono::steady_clock::time_point deadline, bool& timedOut, Eigen::VectorXd& lambdas, DenseMatrix& U) const;
+        void                            applySBlock(const double* X, double* Y, int numCols) const;
         bool                            leadingSymmetricEigensystem(int kLargest, int kSmallest, Eigen::VectorXd& evals, DenseMatrix& U) const;
         bool                            spectralModesForFunctionals(Eigen::VectorXd& evals, DenseMatrix& U) const;
         DenseMatrix                     denseTransitionMatrix(void) const;
         Vector                          hittingTimesToStateVector(Eigen::Index target) const;
         Vector                          hittingTimesToSetVector(const std::vector<Eigen::Index>& targets) const;
         ThreadPool*                     threadPool;
-        SparseMatrix                    P_sparse;
-        mutable RowSparseMatrix         P_row_sparse;
-        mutable bool                    rowSparseReady = false;
+                                        // The sparse kernel, held once, in compressed row-major form. A column of
+                                        // P, where one is needed, is read from the row through detailed balance,
+                                        // pi_i P_ij = pi_j P_ji. (Earlier versions kept a column-major copy as well,
+                                        // 7 GB at ten taxa for TBR.)
+        RowSparseMatrix                 P_row_sparse;
         DenseMatrix                     P_dense;
         Vector                          pi;
         std::vector<uint64_t>           stateHashes;
@@ -310,6 +316,18 @@ class MarkovChainAnalyzer {
         mutable bool                    spectralCacheValid = false;
         mutable int                     spectralCacheNev = 0;
         mutable SpectralInfo            spectralCache;
+
+                                        // The full eigensystem of S, computed once (dense path only) and shared by
+                                        // every dense spectral routine: eigenvalues in descending order, with the
+                                        // Euclidean-orthonormal eigenvectors of S as the matching columns.
+        mutable bool                    denseEigenReady = false;
+        mutable Eigen::VectorXd         denseEigenvalues;
+        mutable DenseMatrix             denseEigenvectors;
+
+                                        // The slow eigenpairs (lambda_2, lambda_3, ...) of S found by the sparse
+                                        // solve, kept so the Kemeny estimate can deflate them exactly.
+        mutable Eigen::VectorXd         slowModeValues;
+        mutable DenseMatrix             slowModeVectors;
 };
 
 #endif

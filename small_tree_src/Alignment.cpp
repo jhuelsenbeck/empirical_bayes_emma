@@ -275,7 +275,166 @@ Alignment::~Alignment(void) {
         delete [] patternCount;
 }
 
+void Alignment::translateToJcPattern(std::vector<int>& pattern) {
+
+    // Bit positions: A = 0, C = 1, G = 2, T = 3.
+    for (int mask : pattern)
+        {
+        if (mask < 1 || mask > 15)
+            throw std::invalid_argument(
+                "JC69 compression requires nucleotide masks from 1 to 15");
+        }
+
+    std::vector<int> canonical = pattern;
+    std::vector<int> candidate(pattern.size());
+
+    std::array<int, 4> permutation = {{0, 1, 2, 3}};
+
+    do
+        {
+        // Apply the same nucleotide permutation to every ambiguity mask.
+        std::array<int, 16> translated = {};
+        for (int mask = 1; mask <= 15; ++mask)
+            {
+            for (int bit = 0; bit < 4; ++bit)
+                {
+                if ((mask & (1 << bit)) != 0)
+                    translated[mask] |= (1 << permutation[bit]);
+                }
+            }
+
+        for (std::size_t i = 0; i < pattern.size(); ++i)
+            candidate[i] = translated[pattern[i]];
+
+        if (candidate < canonical)
+            canonical = candidate;
+        }
+    while (std::next_permutation(permutation.begin(), permutation.end()));
+
+    pattern.swap(canonical);
+}
+
 void Alignment::compress(void) {
+
+#   if 1
+
+    if (matrix == nullptr || numTaxa == 0 || numSites == 0 || isCompressed)
+        return;
+
+    std::vector<std::vector<int>> uniquePatterns;
+    std::vector<int> patternCounts;
+
+    // Maps each canonical pattern to its index in uniquePatterns.
+    std::map<std::vector<int>, std::size_t> patternIndex;
+
+    int removedSites = 0;
+    const int originalNumSites = numSites;
+
+    for (int site = 0; site < numSites; ++site)
+        {
+        std::vector<int> currentPattern(numTaxa);
+        bool allMissing = true;
+
+        for (int taxon = 0; taxon < numTaxa; ++taxon)
+            {
+            currentPattern[taxon] = matrix[taxon][site];
+
+            if (currentPattern[taxon] != 15)
+                allMissing = false;
+            }
+
+        if (allMissing)
+            {
+            ++removedSites;
+            continue;
+            }
+
+        translateToJcPattern(currentPattern);
+
+        const auto result = patternIndex.emplace(
+            currentPattern, uniquePatterns.size());
+
+        if (result.second)
+            {
+            uniquePatterns.push_back(currentPattern);
+            patternCounts.push_back(1);
+            }
+        else
+            {
+            ++patternCounts[result.first->second];
+            }
+        }
+
+    const int newNumSites = static_cast<int>(uniquePatterns.size());
+
+    // allocate before releasing the original data
+    std::vector<int*> newRows(numTaxa);
+    std::vector<int> newCounts = patternCounts;
+
+    // Keep an allocated backing array even if every site was missing.
+    const std::size_t cellCount =
+        static_cast<std::size_t>(numTaxa) *
+        static_cast<std::size_t>(newNumSites);
+
+    std::vector<int> newData(cellCount);
+
+    for (int taxon = 0; taxon < numTaxa; ++taxon)
+        {
+        for (int site = 0; site < newNumSites; ++site)
+            {
+            newData[static_cast<std::size_t>(taxon) * newNumSites + site] =
+                uniquePatterns[site][taxon];
+            }
+        }
+
+    // These arrays match the ownership/layout of your original matrix.
+    int** compressedMatrix = new int*[numTaxa];
+    int* compressedData = nullptr;
+    int* compressedCounts = nullptr;
+
+    try
+        {
+        compressedData = new int[cellCount == 0 ? 1 : cellCount];
+        compressedCounts = new int[newNumSites];
+
+        std::copy(newData.begin(), newData.end(), compressedData);
+        std::copy(newCounts.begin(), newCounts.end(), compressedCounts);
+
+        for (int taxon = 0; taxon < numTaxa; ++taxon)
+            {
+            compressedMatrix[taxon] =
+                compressedData +
+                static_cast<std::size_t>(taxon) * newNumSites;
+            }
+        }
+    catch (...)
+        {
+        delete [] compressedCounts;
+        delete [] compressedData;
+        delete [] compressedMatrix;
+        throw;
+        }
+
+    delete [] matrix[0];
+    delete [] matrix;
+    delete [] patternCount;
+
+    matrix = compressedMatrix;
+    patternCount = compressedCounts;
+    numSites = newNumSites;
+    isCompressed = true;
+
+    std::cout << "   Data compression:\n";
+    std::cout << "   * Alignment compressed from "
+              << originalNumSites << " sites to "
+              << numSites << " unique patterns";
+
+    if (removedSites > 0)
+        std::cout << " (" << removedSites << " all-missing sites removed)";
+
+    std::cout << "\n\n";
+
+#   else
 
     if (matrix == nullptr || numTaxa == 0 || numSites == 0)
         return;
@@ -289,7 +448,7 @@ void Alignment::compress(void) {
     int removedSites = 0;
     
     // process each site (column) in the original matrix
-    for (int site = 0; site < numSites; site++) 
+    for (int site=0; site<numSites; site++) 
         {
         // extract the current site pattern
         std::vector<int> currentPattern(numTaxa);
@@ -315,10 +474,10 @@ void Alignment::compress(void) {
         
         // check if this pattern already exists
         bool patternFound = false;
-        for (size_t i = 0; i < uniquePatterns.size(); i++) 
+        for (size_t i = 0; i<uniquePatterns.size(); i++) 
             {
             bool isIdentical = true;
-            for (int taxon = 0; taxon < numTaxa; taxon++) 
+            for (int taxon = 0; taxon<numTaxa; taxon++) 
                 {
                 if (uniquePatterns[i][taxon] != currentPattern[taxon]) 
                     {
@@ -381,6 +540,7 @@ void Alignment::compress(void) {
     std::cout << std::endl << std::endl;
     
     isCompressed = true;
+#   endif
 }
 
 void Alignment::concatenateTwist(RandomVariable* rng, int nTrees) {

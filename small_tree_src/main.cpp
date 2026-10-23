@@ -62,11 +62,14 @@ int main(int argc, char* argv[]) {
         {
         std::multimap<double, Alignment*> twistedAlignments = generateBadLandscapes(&rng, &threads, data, 100, settings.getNumTwists());
 
-        data = twistedAlignments.rbegin()->second;
         std::cout << "   * Selecting alignment with " << twistedAlignments.rbegin()->first << " peaks (TBR)" << std::endl;
         for (auto [key,val] : twistedAlignments)
             delete val;
-        if (originalAlignment->getNumTaxa() > numTaxa)
+        // data is still the taxon subsample (or the original alignment itself), never one of the twisted
+        // alignments just deleted. Earlier versions pointed data at the selected twisted alignment and
+        // then deleted it a second time here, which crashed every run whose input had more than numTaxa
+        // taxa, after all of the alignment files had been written.
+        if (data != originalAlignment)
             delete data;
         delete originalAlignment;
         std::cout << "   Completed generating twisted data matrices" << std::endl;
@@ -82,22 +85,21 @@ int main(int argc, char* argv[]) {
     LikelihoodCalculator::setExponentialPriorRate(10.0);
     LikelihoodCalculator::setMarginalHessianMethod(1);
 
-    // Build the canonical tree set once (in the NNI cache) and inject the trees + likelihoods into the
-    // NNI2 and TBR caches. Each cache keeps its own copies because the move-set neighborhoods differ.
+    // Build the canonical tree set once, in the NNI cache, which owns the table of tree records. The
+    // NNI2 and TBR caches share that table and keep only their own neighborhoods; earlier versions
+    // copied every record, and its Tree object, into each of them.
     TreeCache treeCacheNni("NNI");
     TreeLikelihoods treeLikelihoods(&treeCacheNni);
     ExhaustiveSearch exhaustive(data, &treeCacheNni, &threads);
     double klDivergence = treeCacheNni.calculatePosteriorProbabilities();
     std::cout << "KL = " << klDivergence << std::endl;
 
-    TreeCache treeCacheNni2("NNI2");
-    treeCacheNni2.injectTreesAndLikelihoods(&treeCacheNni);
-    TreeCache treeCacheTbr("TBR");
-    treeCacheTbr.injectTreesAndLikelihoods(&treeCacheNni);
+    TreeCache treeCacheNni2("NNI2", &treeCacheNni);
+    TreeCache treeCacheTbr("TBR", &treeCacheNni);
 
-    // Generate every move-set's neighbors up front. NNI2 is built from the NNI neighborhoods, so the
-    // NNI neighbors must still exist when NNI2 is generated, which is why all neighbor generation
-    // happens here, before any cache is released below.
+    // NNI2 is built from the NNI neighborhoods, so both are generated here, while the NNI neighbors
+    // exist. TBR, whose neighborhoods are twenty times larger, is generated only when it is analyzed,
+    // after the NNI and NNI2 neighborhoods have been released, so the three are never resident at once.
     TreeNeighborGeneratorNNI treeNeighborGeneratorNni(&treeCacheNni);
     TreeNeighbors treeNeighborsNni(&treeCacheNni, &treeNeighborGeneratorNni, data->getNumTaxa());
     generateNeighbors(treeCacheNni, treeNeighborsNni, "NNI");
@@ -108,7 +110,6 @@ int main(int argc, char* argv[]) {
 
     TreeNeighborGeneratorTBR treeNeighborGeneratorTbr(&treeCacheTbr);
     TreeNeighbors treeNeighborsTbr(&treeCacheTbr, &treeNeighborGeneratorTbr, data->getNumTaxa());
-    generateNeighbors(treeCacheTbr, treeNeighborsTbr, "TBR");
 
     // MAP tree. Its partitions are read from the Tree objects, so build it before freeing them, and
     // snapshot the MAP hash and each split's member-tree hashes into cache-independent structures so
@@ -125,14 +126,11 @@ int main(int argc, char* argv[]) {
         partitionHashLists.emplace_back(mapTree.partitionString(part), std::move(hashes));
         }
 
-    // Release the heavyweight Tree objects now. Neighbor generation and the MAP-tree partitions are
-    // the only consumers of TreeInfo::tree; the kernel analysis and the profile MCMC read only hashes,
-    // neighbour pointers, and cached likelihoods. At ten taxa these objects (held across three caches)
-    // are the dominant memory cost, and freeing them here keeps the analytics phase's working set in
-    // RAM instead of thrashing the page compressor.
+    // Release the heavyweight Tree objects now. The MAP-tree partitions were their last consumer: the
+    // TBR neighbor generator rebuilds each tree from its compact encoding as it goes, and the kernel
+    // analysis and the profile MCMC read only hashes, neighborhoods, and cached likelihoods. The table
+    // is shared, so this releases them for every move set.
     treeCacheNni.freeTreeObjects();
-    treeCacheNni2.freeTreeObjects();
-    treeCacheTbr.freeTreeObjects();
 
     // Output files (shared across all moves and powers; rows are self-identifying via their columns).
     std::string basinTableFileName = settings.getOutputFileName() + ".basins.tsv";
@@ -171,6 +169,12 @@ int main(int argc, char* argv[]) {
         space.writeBasinTable(basinsOut, mapHash);
         basinsOut.flush();
 
+        // The power loop needs only the per-tree landscape records, which do not depend on the power.
+        // Build them now and release the landscape graph, so that it is not resident alongside each
+        // power's transition kernel.
+        space.landscapeByHash(mapHash);
+        space.releaseGraph();
+
         for (double power : powers)
             {
             std::cout << "   Analyzing " << moveName << " with power " << power << "\n";
@@ -201,8 +205,9 @@ int main(int argc, char* argv[]) {
             }
         };
 
-    // Process each move set to completion -- analytics, then its MCMC runs -- and free its cache before
-    // moving on, so beyond the shared tree metadata only one move's neighbour/kernel data is ever live.
+    // Process each move set to completion -- analytics, then its MCMC runs -- and free its neighborhoods
+    // before moving on, so beyond the shared tree records only one move's neighbor/kernel data is ever
+    // live. The records themselves belong to the NNI cache and are released when it goes out of scope.
 
     // NNI (also carries the Metropolis-coupled and Gibbs runs, which sample the NNI cache)
     analyzeMove(&treeCacheNni, "NNI", "nni");
@@ -221,7 +226,7 @@ int main(int argc, char* argv[]) {
         Mcmc gibbs(&rng, &treeCacheNni, data, true, ".conv_Gibbs");
         gibbs.run("MCMC (Gibbs)", nReps);
         }
-    treeCacheNni.freeTreeCache();
+    treeCacheNni.freeNeighbors();
 
     // NNI2
     analyzeMove(&treeCacheNni2, "NNI2", "nni2");
@@ -234,9 +239,10 @@ int main(int argc, char* argv[]) {
             mcmc.run("MCMC (NNI2, " + std::to_string(power) + ")", power, 0, nReps);
             }
         }
-    treeCacheNni2.freeTreeCache();
+    treeCacheNni2.freeNeighbors();
 
     // TBR (also carries the rTBR multiple-try runs, which sample the TBR cache)
+    generateNeighbors(treeCacheTbr, treeNeighborsTbr, "TBR");
     analyzeMove(&treeCacheTbr, "TBR", "tbr");
     if (analyticsOnly == false)
         {
@@ -251,7 +257,7 @@ int main(int argc, char* argv[]) {
             rtbr.run("MCMC (rTBR, " + std::to_string(power) + ")", power, 2 * (data->getNumTaxa() - 3), nReps);
             }
         }
-    treeCacheTbr.freeTreeCache();
+    treeCacheTbr.freeNeighbors();
 
     basinsOut.close();
     std::cout << "   Basin barrier table written to " << basinTableFileName << "\n";
@@ -366,7 +372,7 @@ void generateNeighbors(TreeCache& treeCache, TreeNeighbors& treeNeighbors, std::
 
     for (auto& [key,val] : cache)
         {
-        treeNeighbors.neighbors(val->tree);
+        treeNeighbors.neighbors(val);          // rebuilds the tree from its compact encoding if need be
 
         treeCnt++;
 
@@ -378,6 +384,7 @@ void generateNeighbors(TreeCache& treeCache, TreeNeighbors& treeNeighbors, std::
 
         numAsterices = filledWidth;
         }
+    treeCache.finishNeighbors();
 
     std::cout << "]" << std::endl << std::endl;
 }

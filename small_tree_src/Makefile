@@ -39,6 +39,13 @@ NCL_CXXFLAGS := $(filter-out -Wall,$(CXXFLAGS)) -w
 
 LDFLAGS  := -flto -pthread
 
+# Dense LAPACK (dsyevd, dgemm) for the full eigensystem of small state spaces comes from Accelerate on
+# macOS. Only the framework is linked; no Accelerate header is included, so -DNO_ACCELERATE is
+# unaffected. Elsewhere, or with -DNO_LAPACK in CXXFLAGS, Eigen's solver is used instead.
+ifeq ($(shell uname -s),Darwin)
+LDFLAGS  += -framework Accelerate
+endif
+
 # ---------------------------------------------------------------------------
 # Sources: every .cpp in this directory plus every .cpp under ncl/, discovered
 # automatically so the list can't go stale.

@@ -147,19 +147,18 @@ void TreeNeighborGeneratorNNI2::generateNeighbors(uint64_t treeHash, std::vector
     TreeInfo* info = nniTreeCache->getTreeInfo(treeHash);
     if (info == nullptr)
         Msg::error("Tree info could not be found in TreeNeighborGeneratorNNI2");
-    std::vector<TreeInfo*>& degreeOneNeighbors = info->neighbors;;
+    NeighborList degreeOneNeighbors = nniTreeCache->neighbors(info);
     if (degreeOneNeighbors.size() == 0)
         Msg::error("No neighbors found in TreeNeighborGeneratorNNI2");
-        
+
     // find all degree one and degree two neighbors
     std::set<TreeInfo*> uniqueNeighbors;
-    for (TreeInfo*& nbr1 : degreeOneNeighbors)
+    for (TreeInfo* nbr1 : degreeOneNeighbors)
         {
         uniqueNeighbors.insert(nbr1);
-        
-        TreeInfo* nbrInfo = nniTreeCache->getTreeInfo(nbr1->hash);
-        std::vector<TreeInfo*>& degreeTwoNeighbors = nbrInfo->neighbors;
-        for (TreeInfo*& nbr2 : degreeTwoNeighbors)
+
+        NeighborList degreeTwoNeighbors = nniTreeCache->neighbors(nbr1);
+        for (TreeInfo* nbr2 : degreeTwoNeighbors)
             {
             if (nbr2 != info)
                 uniqueNeighbors.insert(nbr2);
