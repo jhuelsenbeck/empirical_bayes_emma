@@ -111,6 +111,8 @@ class TreeCache {
         NeighborList        neighbors(const TreeInfo* info) const;
         bool                hasNeighbors(const TreeInfo* info) const;
         void                setNeighbors(const TreeInfo* info, const std::vector<TreeInfo*>& nbrs);
+        void                setNeighbors(const TreeInfo* info, const uint32_t* nbrIndices, uint32_t count);
+        void                reserveNeighborEntries(size_t n) { entries.reserve(n); }
         void                finishNeighbors(void);
         void                sortNeighborsByLikelihood(void);
         void                freeNeighbors(void);

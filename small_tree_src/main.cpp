@@ -102,6 +102,7 @@ int main(int argc, char* argv[]) {
     // NNI2 is built from the NNI neighborhoods, so both are generated here, while the NNI neighbors
     // exist. TBR, whose neighborhoods are twenty times larger, is generated only when it is analyzed,
     // after the NNI and NNI2 neighborhoods have been released, so the three are never resident at once.
+    // It is generated from split masks, in parallel (TbrSplitNeighbors), not by building trees.
     TreeNeighborGeneratorNNI treeNeighborGeneratorNni(&treeCacheNni);
     TreeNeighbors treeNeighborsNni(&treeCacheNni, &treeNeighborGeneratorNni, data->getNumTaxa());
     generateNeighbors(treeCacheNni, treeNeighborsNni, "NNI");
@@ -110,8 +111,7 @@ int main(int argc, char* argv[]) {
     TreeNeighbors treeNeighborsNni2(&treeCacheNni2, &treeNeighborGeneratorNni2, data->getNumTaxa());
     generateNeighbors(treeCacheNni2, treeNeighborsNni2, "NNI2");
 
-    TreeNeighborGeneratorTBR treeNeighborGeneratorTbr(&treeCacheTbr);
-    TreeNeighbors treeNeighborsTbr(&treeCacheTbr, &treeNeighborGeneratorTbr, data->getNumTaxa());
+    TbrSplitNeighbors tbrNeighbors(&treeCacheTbr, data->getNumTaxa());
 
     // MAP tree. Its partitions are read from the Tree objects, so build it before freeing them, and
     // snapshot the MAP hash and each split's member-tree hashes into cache-independent structures so
@@ -244,7 +244,7 @@ int main(int argc, char* argv[]) {
     treeCacheNni2.freeNeighbors();
 
     // TBR (also carries the rTBR multiple-try runs, which sample the TBR cache)
-    generateNeighbors(treeCacheTbr, treeNeighborsTbr, "TBR");
+    tbrNeighbors.generateAll(&threads);
     analyzeMove(&treeCacheTbr, "TBR", "tbr");
     if (analyticsOnly == false)
         {
@@ -312,9 +312,8 @@ std::multimap<double, Alignment*> generateBadLandscapes(RandomVariable* rng, Thr
     TreeCache cache("TBR");
     TreeLikelihoods treeLikelihoods(&cache);
     ExhaustiveSearch exhaustive(base, &cache, threads);            // enumerates + an initial (discarded) pass
-    TreeNeighborGeneratorTBR gen(&cache);
-    TreeNeighbors neighbors(&cache, &gen, base->getNumTaxa());
-    generateNeighbors(cache, neighbors, "TBR");
+    TbrSplitNeighbors tbrNeighbors(&cache, base->getNumTaxa());
+    tbrNeighbors.generateAll(threads);
 
     std::multimap<double, Alignment*> byBasins; // key: effectiveNumBasins (TBR)
 

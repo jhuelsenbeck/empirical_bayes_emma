@@ -227,6 +227,20 @@ void TreeCache::setNeighbors(const TreeInfo* info, const std::vector<TreeInfo*>&
     proposalReady = false;
 }
 
+void TreeCache::setNeighbors(const TreeInfo* info, const uint32_t* nbrIndices, uint32_t count) {
+
+    ensureRowStorage();
+    uint32_t idx = info->index;
+    if (rowCount[idx] != 0)
+        Msg::error("Neighbors of a tree were generated twice");
+
+    rowOffset[idx] = entries.size();
+    rowCount[idx]  = count;
+    entries.insert(entries.end(), nbrIndices, nbrIndices + count);
+    neighborsSorted = false;
+    proposalReady = false;
+}
+
 void TreeCache::finishNeighbors(void) {
 
     // The rows are appended as they are generated, so the array grows by doubling; release the slack
