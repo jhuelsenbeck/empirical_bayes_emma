@@ -312,14 +312,8 @@ class MarkovChainAnalyzer {
         void                            buildAcceleratedOperator(void) const;
         mutable Vector                  piSqrtCached;
         mutable Vector                  applyScratch;                   // D^{-1/2} x, reused by every applyS
-        bool                            ensurePermuted(void) const;
-        static constexpr size_t         permMinStates = 262144;         // smaller kernels fit in cache as they are
-        mutable int                     permState = 0;                  // 0 unbuilt, 1 built, -1 not used
-        mutable std::vector<int>        permOrder;                      // locality order: position -> state
-        mutable std::vector<int>        permOuter;                      // the kernel's rows in that order
-        mutable std::vector<int>        permInner;
-        mutable std::vector<double>     permValues;
-        mutable std::vector<double>     permSqrtPi;                     // sqrt(pi) in that order
+        Eigen::Index                    reachabilityReference = 0;      // "state 0" of the reachability summaries
+        std::vector<Eigen::Index>       mapOrderState;                  // state of the k-th tree in map order
         mutable bool                    piSqrtReady = false;
         mutable bool                    supportWasRestricted = false;   // true once buildFromCache dropped underflowed states
         //mutable void*                   accelHandle = nullptr;    // SparseMatrix_Double* (Apple) or null

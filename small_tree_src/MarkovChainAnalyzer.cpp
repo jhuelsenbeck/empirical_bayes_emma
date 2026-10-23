@@ -119,10 +119,9 @@ namespace {
                                     SparseMatVecTask(void) = delete;
                                     SparseMatVecTask(const int* out, const int* in, const double* v,
                                                      const double* x, double* y,
-                                                     Eigen::Index lo, Eigen::Index hi, const double* scale = nullptr,
-                                                     const int* outRow = nullptr) :
+                                                     Eigen::Index lo, Eigen::Index hi, const double* scale = nullptr) :
                                         outerIndex(out), innerIndex(in), values(v),
-                                        xIn(x), yOut(y), begin(lo), end(hi), rowScale(scale), outIndex(outRow) { }
+                                        xIn(x), yOut(y), begin(lo), end(hi), rowScale(scale) { }
             void                    run(void) override;
 
         private:
@@ -134,7 +133,6 @@ namespace {
             Eigen::Index            begin;
             Eigen::Index            end;
             const double*           rowScale;                     // optional: y_i is scaled by rowScale[i]
-            const int*              outIndex;                     // optional: row i is written to y[outIndex[i]]
     };
 
     void SparseMatVecTask::run(void) {
@@ -144,7 +142,7 @@ namespace {
             double sum = 0.0;
             for (int k = outerIndex[i]; k < outerIndex[i+1]; ++k)
                 sum += values[k] * xIn[innerIndex[k]];
-            yOut[(outIndex != nullptr) ? outIndex[i] : i] = (rowScale != nullptr) ? rowScale[i] * sum : sum;
+            yOut[i] = (rowScale != nullptr) ? rowScale[i] * sum : sum;
             }
     }
 
@@ -271,10 +269,9 @@ namespace {
                                     SparseMatBlockTask(void) = delete;
                                     SparseMatBlockTask(const int* out, const int* in, const double* v,
                                                        const double* x, double* y, int k,
-                                                       Eigen::Index lo, Eigen::Index hi, const double* scale = nullptr,
-                                                       const int* outRow = nullptr) :
+                                                       Eigen::Index lo, Eigen::Index hi, const double* scale = nullptr) :
                                         outerIndex(out), innerIndex(in), values(v),
-                                        xIn(x), yOut(y), numCols(k), begin(lo), end(hi), rowScale(scale), outIndex(outRow) { }
+                                        xIn(x), yOut(y), numCols(k), begin(lo), end(hi), rowScale(scale) { }
             void                    run(void) override;
 
         private:
@@ -287,14 +284,13 @@ namespace {
             Eigen::Index            begin;
             Eigen::Index            end;
             const double*           rowScale;                     // optional: Y row i is scaled by rowScale[i]
-            const int*              outIndex;                     // optional: row i is written to Y row outIndex[i]
     };
 
     void SparseMatBlockTask::run(void) {
 
         for (Eigen::Index i = begin; i < end; ++i)
             {
-            double* yi = yOut + static_cast<Eigen::Index>((outIndex != nullptr) ? outIndex[i] : i) * numCols;
+            double* yi = yOut + i * numCols;
             for (int c = 0; c < numCols; ++c)
                 yi[c] = 0.0;
             for (int k = outerIndex[i]; k < outerIndex[i+1]; ++k)
@@ -392,95 +388,6 @@ void MarkovChainAnalyzer::applySymmetrizedLaplacian(const Vector& piSqrt, const 
     out = y - Sy;                                                 // (I - S) y
 }
 
-// A copy of the kernel with its states renumbered in breadth-first order over the kernel's own graph,
-// built on the first product with a large kernel. The states are numbered by the hash map that holds
-// the trees, which scatters a tree's neighbors across the whole state vector: every entry of a product
-// then reads x from a random place in a 16 MB vector. Breadth-first order puts a tree's neighbors in
-// the same or an adjacent level, and more of the reads of x hit cache: on the 10-taxon TBR kernel the
-// eigensolves ran 30% faster and the Kemeny estimate 29%. The price is the copy itself, 7 GB for that
-// kernel. Only the products use it; every other routine, and every output, sees the states in their
-// original order. Within a row the entries are summed in the new column order, so a product differs
-// from the original in rounding only.
-bool MarkovChainAnalyzer::ensurePermuted(void) const {
-
-    if (permState != 0)
-        return permState == 1;
-    permState = -1;
-    if (!isSparse || n < permMinStates)
-        return false;
-
-    ensureRowSparse();
-    if (!piSqrtReady)
-        {
-        piSqrtCached = posteriorSqrt();
-        piSqrtReady = true;
-        }
-    Eigen::Index N = static_cast<Eigen::Index>(n);
-    const int*    outer = P_row_sparse.outerIndexPtr();
-    const int*    inner = P_row_sparse.innerIndexPtr();
-    const double* vals  = P_row_sparse.valuePtr();
-
-    // breadth-first order, neighbors taken in row order, from state 0 (and from the next unnumbered
-    // state should the graph not be connected)
-    permOrder.assign(static_cast<size_t>(N), 0);
-    std::vector<int> pos(static_cast<size_t>(N), -1);
-    Eigen::Index numbered = 0;
-    for (Eigen::Index s = 0; s < N; ++s)
-        {
-        if (pos[static_cast<size_t>(s)] >= 0)
-            continue;
-        Eigen::Index head = numbered;
-        pos[static_cast<size_t>(s)] = static_cast<int>(numbered);
-        permOrder[static_cast<size_t>(numbered++)] = static_cast<int>(s);
-        while (head < numbered)
-            {
-            int i = permOrder[static_cast<size_t>(head++)];
-            for (int k = outer[i]; k < outer[i + 1]; ++k)
-                {
-                int j = inner[k];
-                if (pos[static_cast<size_t>(j)] < 0)
-                    {
-                    pos[static_cast<size_t>(j)] = static_cast<int>(numbered);
-                    permOrder[static_cast<size_t>(numbered++)] = j;
-                    }
-                }
-            }
-        }
-
-    permOuter.assign(static_cast<size_t>(N) + 1, 0);
-    for (Eigen::Index k = 0; k < N; ++k)
-        {
-        int i = permOrder[static_cast<size_t>(k)];
-        permOuter[static_cast<size_t>(k) + 1] = permOuter[static_cast<size_t>(k)] + (outer[i + 1] - outer[i]);
-        }
-    permInner.resize(static_cast<size_t>(permOuter[static_cast<size_t>(N)]));
-    permValues.resize(permInner.size());
-    permSqrtPi.resize(static_cast<size_t>(N));
-    const double* sp = piSqrtCached.data();
-    forRowRanges(threadPool, N, 256, [&](Eigen::Index lo, Eigen::Index hi, int)
-        {
-        std::vector<std::pair<int, double>> row;
-        for (Eigen::Index k = lo; k < hi; ++k)
-            {
-            int i = permOrder[static_cast<size_t>(k)];
-            permSqrtPi[static_cast<size_t>(k)] = sp[i];
-            row.clear();
-            for (int e = outer[i]; e < outer[i + 1]; ++e)
-                row.emplace_back(pos[static_cast<size_t>(inner[e])], vals[e]);
-            std::sort(row.begin(), row.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-            int at = permOuter[static_cast<size_t>(k)];
-            for (const auto& [j, v] : row)
-                {
-                permInner[static_cast<size_t>(at)]  = j;
-                permValues[static_cast<size_t>(at)] = v;
-                ++at;
-                }
-            }
-        });
-    permState = 1;
-    return true;
-}
-
 void MarkovChainAnalyzer::applyS(const double* x, double* y) const {
 
     Eigen::Index N = static_cast<Eigen::Index>(n);
@@ -507,32 +414,6 @@ void MarkovChainAnalyzer::applyS(const double* x, double* y) const {
         piSqrtCached = posteriorSqrt();
         piSqrtReady = true;
         }
-    if (isSparse && threadPool != nullptr && ensurePermuted())
-        {
-        // The product with the locality-ordered copy of the kernel (see ensurePermuted): x is gathered
-        // into the copy's order, scaled, as it is read, and each row of the product is scaled and written
-        // back to its own state.
-        applyScratch.resize(N);
-        const int*    ord = permOrder.data();
-        const double* spP = permSqrtPi.data();
-        double*       tp  = applyScratch.data();
-        forRowRanges(N >= (Eigen::Index(1) << 16) ? threadPool : nullptr, N, 64, [&](Eigen::Index lo, Eigen::Index hi, int)
-            {
-            for (Eigen::Index k = lo; k < hi; ++k)
-                tp[k] = x[ord[k]] / spP[k];
-            });
-        int numTasks = std::max(1, threadPool->getThreadCount() * 4);
-        Eigen::Index chunk = std::max<Eigen::Index>(1, (N + numTasks - 1) / numTasks);
-        std::vector<SparseMatVecTask> tasks;
-        tasks.reserve(static_cast<size_t>(numTasks) + 1);
-        for (Eigen::Index lo = 0; lo < N; lo += chunk)
-            tasks.emplace_back(permOuter.data(), permInner.data(), permValues.data(), tp, y, lo, std::min(N, lo + chunk), spP, ord);
-        for (SparseMatVecTask& t : tasks)
-            threadPool->pushTask(&t);
-        threadPool->wait();
-        return;
-        }
-
     if (isSparse && threadPool != nullptr)
         {
         // The scalings are done in the threaded passes, into a buffer kept between calls: D^{-1/2} x in
@@ -594,36 +475,6 @@ void MarkovChainAnalyzer::applySBlock(const double* X, double* Y, int numCols) c
         {
         RowBlock T = piSqrtCached.cwiseInverse().asDiagonal() * Xm;   // D^{-1/2} X
         Ym.noalias() = piSqrtCached.asDiagonal() * (P_dense * T);
-        return;
-        }
-
-    if (threadPool != nullptr && ensurePermuted())
-        {
-        // as in applyS: gather and scale into the locality order, multiply, scale and scatter back
-        RowBlock T(N, numCols);
-        const int*    ord = permOrder.data();
-        const double* spP = permSqrtPi.data();
-        double*       tp  = T.data();
-        forRowRanges(threadPool, N, 64, [&](Eigen::Index lo, Eigen::Index hi, int)
-            {
-            for (Eigen::Index k = lo; k < hi; ++k)
-                {
-                double inv = 1.0 / spP[k];
-                const double* xk = X + static_cast<Eigen::Index>(ord[k]) * numCols;
-                for (int c = 0; c < numCols; ++c)
-                    tp[k * numCols + c] = inv * xk[c];
-                }
-            });
-        int numTasks = std::max(1, threadPool->getThreadCount() * 4);
-        Eigen::Index chunk = std::max<Eigen::Index>(1, (N + numTasks - 1) / numTasks);
-        std::vector<SparseMatBlockTask> tasks;
-        tasks.reserve(static_cast<size_t>(numTasks) + 1);
-        for (Eigen::Index lo = 0; lo < N; lo += chunk)
-            tasks.emplace_back(permOuter.data(), permInner.data(), permValues.data(), T.data(), Y, numCols, lo,
-                               std::min(N, lo + chunk), spP, ord);
-        for (SparseMatBlockTask& t : tasks)
-            threadPool->pushTask(&t);
-        threadPool->wait();
         return;
         }
 
@@ -956,6 +807,75 @@ void MarkovChainAnalyzer::buildFromCache(TreeCache* cache) {
                           << " posterior mass form a component unreachable from the MAP tree except through "
                              "underflowed states; the chain is near-reducible and that mass is excluded from "
                              "the spectral analysis.\n";
+            }
+        }
+
+    // ---- Number the states for locality ----
+    // The order of the hash map holding the trees scatters each tree's neighbors across the whole state
+    // vector, so every entry of a product with the kernel reads x from a random place in it. Numbered
+    // breadth-first from the MAP tree over this move's neighbor graph, a tree's neighbors lie in its own
+    // level or the next, and more of those reads hit cache: on the 10-taxon TBR kernel the eigensolves
+    // and the Kemeny estimate ran about 30% faster. Every output carries the tree hash beside the state
+    // index, so only the order of the per-state rows changes. Small (dense) state spaces keep the map's
+    // order. States outside the support (stateIndex < 0) are neither numbered nor crossed.
+    if (isSparse && n > 1)
+        {
+        size_t tableSize = cache->size();
+        std::vector<int64_t> newIndex(tableSize, -1);            // by table index
+        std::vector<uint32_t> order;                              // table indices in the new order
+        order.reserve(n);
+        TreeInfo* start = nullptr;
+        double    bestPi = -1.0;
+        for (const auto& [h, info] : tcache)
+            if (info && info->stateIndex >= 0 && info->posteriorProbability > bestPi)
+                { bestPi = info->posteriorProbability; start = info; }
+        auto visit = [&](TreeInfo* root)
+            {
+            size_t head = order.size();
+            newIndex[root->index] = static_cast<int64_t>(order.size());
+            order.push_back(root->index);
+            while (head < order.size())
+                {
+                NeighborList nbrs = cache->neighbors(cache->treeAt(order[head++]));
+                for (uint32_t k = 0; k < nbrs.size(); ++k)
+                    {
+                    uint32_t j = nbrs.indexAt(k);
+                    if (newIndex[j] >= 0)
+                        continue;
+                    TreeInfo* nb = cache->treeAt(j);
+                    if (nb->stateIndex < 0)
+                        continue;
+                    newIndex[j] = static_cast<int64_t>(order.size());
+                    order.push_back(j);
+                    }
+                }
+            };
+        if (start != nullptr)
+            visit(start);
+        for (const auto& [h, info] : tcache)                      // should the graph not be connected
+            if (info && info->stateIndex >= 0 && newIndex[info->index] < 0)
+                visit(info);
+
+        // the new index of each tree in the map's order (the order of the former numbering)
+        mapOrderState.clear();
+        mapOrderState.reserve(n);
+        for (const auto& [h, info] : tcache)
+            if (info && info->stateIndex >= 0)
+                mapOrderState.push_back(static_cast<Eigen::Index>(newIndex[info->index]));
+
+        // The reachability summaries count the states reachable from, and able to reach, "state 0", which
+        // was the first tree of the map; that tree stays their reference, so those columns keep their
+        // meaning across the renumbering.
+        reachabilityReference = mapOrderState.empty() ? 0 : mapOrderState[0];
+
+        hashToIndex.clear();
+        hashToIndex.reserve(n * 2);
+        for (size_t k = 0; k < order.size(); ++k)
+            {
+            TreeInfo* info = cache->treeAt(order[k]);
+            info->stateIndex = static_cast<int64_t>(k);
+            stateHashes[k] = info->hash;
+            hashToIndex[info->hash] = static_cast<Eigen::Index>(k);
             }
         }
 
@@ -1386,8 +1306,8 @@ IrreducibilityInfo MarkovChainAnalyzer::computeIrreducibilityInfo(double thresho
     if (!std::isfinite(info.min_leave_probability))
         info.min_leave_probability = std::numeric_limits<double>::quiet_NaN();
 
-    info.states_reachable_from_0 = countReachableForward(0, threshold);
-    info.states_that_can_reach_0 = countReachableReverse(0, threshold);
+    info.states_reachable_from_0 = countReachableForward(reachabilityReference, threshold);
+    info.states_that_can_reach_0 = countReachableReverse(reachabilityReference, threshold);
     info.irreducible = (info.states_reachable_from_0 == n && info.states_that_can_reach_0 == n);
     return info;
 }
@@ -2370,8 +2290,8 @@ ThresholdedIrreducibilityInfo MarkovChainAnalyzer::computeThresholdedIrreducibil
             if (!std::isfinite(info.min_leave_probability))
                 info.min_leave_probability = std::numeric_limits<double>::quiet_NaN();
             double tau = thresholds[t];
-            info.states_reachable_from_0 = (fullForwardAt >= tau) ? n : countReachableForward(0, tau);
-            info.states_that_can_reach_0 = (fullReverseAt >= tau) ? n : countReachableReverse(0, tau);
+            info.states_reachable_from_0 = (fullForwardAt >= tau) ? n : countReachableForward(reachabilityReference, tau);
+            info.states_that_can_reach_0 = (fullReverseAt >= tau) ? n : countReachableReverse(reachabilityReference, tau);
             if (info.states_reachable_from_0 == n && fullForwardAt < tau)
                 fullForwardAt = tau;
             if (info.states_that_can_reach_0 == n && fullReverseAt < tau)
@@ -3209,10 +3129,11 @@ double MarkovChainAnalyzer::kemenyConstantStochastic(int numProbes, int lanczosS
         {
         int nb = std::min(blockSize, numProbes - p0);
 
+        // the signs are drawn in the trees' map order, so the probes do not depend on the state numbering
         RowBlock Z(N, nb);
         for (int c = 0; c < nb; ++c)
-            for (Eigen::Index i = 0; i < N; ++i)
-                Z(i, c) = coin(gen) ? 1.0 : -1.0;
+            for (Eigen::Index k = 0; k < N; ++k)
+                Z(mapOrderState.empty() ? k : mapOrderState[static_cast<size_t>(k)], c) = coin(gen) ? 1.0 : -1.0;
         deflate(Z);
 
         std::vector<double> z2(static_cast<size_t>(nb));
