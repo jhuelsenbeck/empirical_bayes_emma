@@ -15,6 +15,7 @@ class UserSettings {
                                         }
         double                      getBurnin(void) { return burnin; }
         int                         getChainLength(void) { return chainLength; }
+        bool                        getComputeMarginalLikelihoods(void) { return computeMarginalLikelihoods; }
         std::vector<std::string>    getExcludedTaxa(void) { return excludedTaxa; }
         std::string                 getInputFileName(void) { return inputFileName; }
         int                         getNumTwists(void) { return numTwists; }
@@ -36,6 +37,7 @@ class UserSettings {
         int                         printFrequency;
         int                         sampleFrequency;
         int                         numTwists;
+        bool                        computeMarginalLikelihoods;    // Laplace marginal per tree (-l); off by default
         std::string                 inputFileName;
         std::string                 outputFileName;
         std::string                 outputDirectoryName;

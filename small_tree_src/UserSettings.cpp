@@ -22,6 +22,7 @@ UserSettings::UserSettings(void) {
     outputFileNameStub = "";
     burnin = 0.0;
     numTwists = 0;
+    computeMarginalLikelihoods = false;
 }
 
 void UserSettings::readSettings(int argc, char* argv[]) {
@@ -84,6 +85,15 @@ void UserSettings::readSettings(int argc, char* argv[]) {
                 numTwists = stod(cmd);
             else if (key == "-e")
                 excludedTaxa.push_back(cmd);
+            else if (key == "-l")
+                {
+                if (cmd == "yes" || cmd == "1" || cmd == "true")
+                    computeMarginalLikelihoods = true;
+                else if (cmd == "no" || cmd == "0" || cmd == "false")
+                    computeMarginalLikelihoods = false;
+                else
+                    Msg::error("The -l option takes yes or no");
+                }
             else
                 Msg::error("Improperly formatted commands");
             readingKey = true;
@@ -114,6 +124,7 @@ void UserSettings::print(void) {
     std::cout << "   * Print frequency (-p)      = " << printFrequency << std::endl;
     std::cout << "   * Sample frequency (-s)     = " << sampleFrequency << std::endl;
     std::cout << "   * Num alignment twists (-w) = " << numTwists << std::endl;
+    std::cout << "   * Laplace marginals (-l)    = " << (computeMarginalLikelihoods ? "yes" : "no") << std::endl;
     std::cout << std::endl;
 }
 
@@ -127,5 +138,6 @@ void UserSettings::usage(void) {
     std::cout << "-p        Print to screen frequency" << std::endl;
     std::cout << "-s        Chain sample frequency" << std::endl;
     std::cout << "-w        Number of alignment twists (permutations)" << std::endl;
+    std::cout << "-l        Laplace marginal likelihood of every tree: yes or no (default no)" << std::endl;
     Msg::error("Incorrectly formatted command line input");
 }

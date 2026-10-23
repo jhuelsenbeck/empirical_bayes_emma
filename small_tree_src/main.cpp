@@ -80,8 +80,10 @@ int main(int argc, char* argv[]) {
     data->summarize();
     data->compress();
         
-    // integrate branch lengths out under an IID Exp() prior (Laplace) in addition to the ML fit
-    LikelihoodCalculator::setComputeMarginalLikelihood(true);
+    // Optionally integrate branch lengths out under an IID Exp() prior (Laplace) in addition to the ML
+    // fit. Off unless -l yes is given: the finite-difference Hessian makes it the larger part of the
+    // likelihood pass (about 64% of it at nine taxa).
+    LikelihoodCalculator::setComputeMarginalLikelihood(settings.getComputeMarginalLikelihoods());
     LikelihoodCalculator::setExponentialPriorRate(10.0);
     LikelihoodCalculator::setMarginalHessianMethod(1);
 

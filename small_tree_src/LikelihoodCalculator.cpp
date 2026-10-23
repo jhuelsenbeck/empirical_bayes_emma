@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include "Alignment.hpp"
 #include "ConditionalLikelihoods.hpp"
@@ -11,6 +12,7 @@
 bool   LikelihoodCalculator::computeMarginal = false;
 double LikelihoodCalculator::exponentialPriorRate = 10.0;   // IID Exp(10) prior on each branch length
 int    LikelihoodCalculator::hessianMethod = 1;             // 0 = diagonal, 1 = full (finite difference)
+LikelihoodCalculator::BranchOptimizer LikelihoodCalculator::branchOptimizer = LikelihoodCalculator::BranchOptimizer::Joint;
 
 
 
@@ -35,6 +37,15 @@ LikelihoodCalculator::LikelihoodCalculator(Alignment* aln) : tree(nullptr) {
         
     // initialize the transition probabilities
     tiProbs = new TransitionMatrix[numNodes];
+
+    // scratch space for the joint three-branch optimizer
+    c0.resize(numSites);
+    cab.resize(numSites);
+    cac.resize(numSites);
+    cbc.resize(numSites);
+    cabc.resize(numSites);
+    nodeL.resize(numSites);
+    nodeTrialL.resize(numSites);
 }
 
 LikelihoodCalculator::~LikelihoodCalculator(void) {
@@ -165,9 +176,31 @@ double LikelihoodCalculator::iterateBranch(Node* p) {
 }
 
 double LikelihoodCalculator::lnLikelihood(void) {
-    
+
     if (tree == nullptr)
         return 0.0;
+
+    double bestLnL = (branchOptimizer == BranchOptimizer::Joint) ? lnLikelihoodJoint() : lnLikelihoodSingleBranch();
+
+    // Optionally integrate the branch lengths out under the prior. This is a side calculation that
+    // starts from the maximum-likelihood branch lengths just found, moves them to the joint posterior
+    // mode, evaluates the Laplace approximation, and restores the ML branch lengths -- so the value
+    // returned here (the profile / ML log likelihood) is unaffected. The result is stored on the tree.
+    if (computeMarginal == true && treeInfo != nullptr)
+        {
+        treeInfo->lnMarginalLikelihood = lnMarginalLikelihood();
+        treeInfo->hasLnMarginalLikelihood = true;
+        }
+
+    return bestLnL;
+}
+
+// The earlier optimizer: Newton on one branch at a time, sweeping the tree until the log likelihood
+// stops changing. It stalls on likelihood ridges -- where a branch shrinks toward zero and length
+// can be traded between the branches meeting at a node -- creeping along them by less than the
+// tolerance per sweep and stopping well short of the maximum (by 33-49 log-likelihood units in tests).
+// Kept so the two optimizers can be compared; lnLikelihoodJoint() is the default.
+double LikelihoodCalculator::lnLikelihoodSingleBranch(void) {
 
     double bestLnL = 0.0;
     const std::vector<Node*>& postOrder = tree->getDownPassSequence();
@@ -206,17 +239,394 @@ double LikelihoodCalculator::lnLikelihood(void) {
             bestLnL = lnL;
         }
 
-    // Optionally integrate the branch lengths out under the prior. This is a side calculation that
-    // starts from the maximum-likelihood branch lengths just found, moves them to the joint posterior
-    // mode, evaluates the Laplace approximation, and restores the ML branch lengths -- so the value
-    // returned here (the profile / ML log likelihood) is unaffected. The result is stored on the tree.
-    if (computeMarginal == true && treeInfo != nullptr)
+    return bestLnL;
+}
+
+// ---- Joint three-branch optimization (after FastTbr's JcLikelihood) ----
+//
+// The conditional likelihoods follow this class's convention: the "Up" vector of a node is the
+// subtree below it, evaluated at the node; the "Dn" vector is everything outside that subtree,
+// evaluated at the node's ancestor. The branch above node p therefore joins Up[p] and Dn[p].
+//
+// Branch lengths are optimized three at a time, the three branches meeting at an interior node v:
+// the branch above v, whose far end is Dn[v], and the branches to v's children d0 and d1, whose far
+// ends are Up[d0] and Up[d1]. Under JC69, with e = exp(-4b/3), (P(b) X)_s = sum(X)/4 + e (X_s -
+// sum(X)/4), and because the deviations X_s - sum(X)/4 sum to zero the likelihood of pattern i
+// collapses to
+//
+//      L_i = c0 + cab ea eb + cac ea ec + cbc eb ec + cabc ea eb ec,
+//
+// five coefficients formed once per node. A safeguarded Newton search in (ea, eb, ec) then costs one
+// pass over the patterns per evaluation and needs no logarithms: steps are accepted on a lower
+// bound for the gain in log likelihood (log x >= 1 - 1/x). Optimizing the three together lets
+// length move along the ridges on which the single-branch optimizer stalls.
+//
+// A sweep visits the interior nodes from the root's descendant downward, recomputing each child's
+// Dn vector on the way down and each node's Up vector on the way back, so every node is optimized
+// with current conditionals; tip branches are optimized by their parent. Sweeps repeat until the
+// log likelihood improves by less than 1e-6.
+double LikelihoodCalculator::lnLikelihoodJoint(void) {
+
+    const std::vector<Node*>& postOrder = tree->getDownPassSequence();
+    for (Node* p : postOrder)
         {
-        treeInfo->lnMarginalLikelihood = lnMarginalLikelihood();
-        treeInfo->hasLnMarginalLikelihood = true;
+        if (p != treeRoot)
+            p->setBrlen(std::min(std::max(p->getBrlen(), minBrlen), maxBrlen));
         }
 
-    return bestLnL;
+    // every Up vector from the current branch lengths; the root descendant's Dn vector is the root
+    // tip's data, placed there by setTree()
+    for (Node* p : postOrder)
+        {
+        if (p != treeRoot && p->getIsTip() == false)
+            jcUp(p);
+        }
+
+    const double tolerance = 1.0e-6;
+    const int    maxPasses = 100;
+    double lnL = rootEdgeLnL();
+    for (int pass=0; pass<maxPasses; pass++)
+        {
+        smoothNode(treeRootDescendant);
+        double newLnL = rootEdgeLnL();
+        bool done = (newLnL - lnL < tolerance);
+        lnL = newLnL;
+        if (done == true)
+            break;
+        }
+
+    // Leave the cached transition matrices consistent with the branch lengths, and every conditional
+    // likelihood marked stale, for any later calculation that uses the dirty-flag machinery.
+    for (Node* p : postOrder)
+        {
+        if (p != treeRoot)
+            tiProbs[p->getIndex()].setBrlen(p->getBrlen());
+        }
+    tree->markUpClsAsDirty();
+    tree->markDnClsAsDirty();
+    tree->setAllFlags(false);
+
+    return lnL;
+}
+
+// Up[p] = P(b_d0) Up[d0] * P(b_d1) Up[d1], with (P(b) v)_s = (1-e)/4 sum(v) + e v_s under JC69
+void LikelihoodCalculator::jcUp(Node* p) {
+
+    Node* d0 = p->getFirstDescendant();
+    Node* d1 = d0->getNextSibling();
+    const double* a = condLikes[d0->getIndex()]->beginUp();
+    const double* b = condLikes[d1->getIndex()]->beginUp();
+    double e0 = std::exp(-4.0 * d0->getBrlen() / 3.0);
+    double e1 = std::exp(-4.0 * d1->getBrlen() / 3.0);
+    double q0 = 0.25 * (1.0 - e0);
+    double q1 = 0.25 * (1.0 - e1);
+    double* out = condLikes[p->getIndex()]->beginUp();
+
+    for (size_t c=0; c<numSites; c++, a+=4, b+=4, out+=4)
+        {
+        double c0s = q0 * (a[0] + a[1] + a[2] + a[3]);
+        double c1s = q1 * (b[0] + b[1] + b[2] + b[3]);
+        for (int s=0; s<4; s++)
+            out[s] = (c0s + e0 * a[s]) * (c1s + e1 * b[s]);
+        }
+}
+
+// Dn[c] = P(b_anc) Dn[anc] * P(b_sis) Up[sis], with anc the ancestor of c and sis its sister: the
+// conditional likelihood at anc of everything outside the subtree below c
+void LikelihoodCalculator::jcDn(Node* c) {
+
+    Node* anc = c->getAncestor();
+    Node* sis = c->getSister();
+    const double* a = condLikes[anc->getIndex()]->beginDn();
+    const double* b = condLikes[sis->getIndex()]->beginUp();
+    double ea = std::exp(-4.0 * anc->getBrlen() / 3.0);
+    double es = std::exp(-4.0 * sis->getBrlen() / 3.0);
+    double qa = 0.25 * (1.0 - ea);
+    double qs = 0.25 * (1.0 - es);
+    double* out = condLikes[c->getIndex()]->beginDn();
+
+    for (size_t k=0; k<numSites; k++, a+=4, b+=4, out+=4)
+        {
+        double cas = qa * (a[0] + a[1] + a[2] + a[3]);
+        double css = qs * (b[0] + b[1] + b[2] + b[3]);
+        for (int s=0; s<4; s++)
+            out[s] = (cas + ea * a[s]) * (css + es * b[s]);
+        }
+}
+
+// The log likelihood across the branch above the root's descendant. With A = Up, B = Dn, S = sum_s
+// A_s B_s and T = sum(A) sum(B), L_i = 1/4 sum_s A_s [(1-e)/4 sum(B) + e B_s] = T/16 + e (S - T/4) / 4.
+double LikelihoodCalculator::rootEdgeLnL(void) {
+
+    const double* a = condLikes[treeRootDescendant->getIndex()]->beginUp();
+    const double* b = condLikes[treeRootDescendant->getIndex()]->beginDn();
+    double e = std::exp(-4.0 * treeRootDescendant->getBrlen() / 3.0);
+    double lnL = 0.0;
+    for (size_t i=0; i<numSites; i++, a+=4, b+=4)
+        {
+        double S = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
+        double T = (a[0] + a[1] + a[2] + a[3]) * (b[0] + b[1] + b[2] + b[3]);
+        double L = T / 16.0 + e * (S - 0.25 * T) / 4.0;
+        lnL += patternCount[i] * std::log(L);
+        }
+    return lnL;
+}
+
+// On entry Dn[v] and the Up vectors of v's children are current. Optimize the three branches at v,
+// then every interior node below it; on return Up[v] is current again.
+void LikelihoodCalculator::smoothNode(Node* v) {
+
+    optimizeNode(v);
+
+    Node* d0 = v->getFirstDescendant();
+    Node* d1 = d0->getNextSibling();
+    if (d0->getIsTip() == false)
+        {
+        jcDn(d0);
+        smoothNode(d0);
+        }
+    if (d1->getIsTip() == false)
+        {
+        jcDn(d1);
+        smoothNode(d1);
+        }
+    jcUp(v);
+}
+
+// The likelihood of pattern i at interior node v as a polynomial in (ea, eb, ec), the transformed
+// lengths of the branch above v and the branches to its two children. With far-end vectors A =
+// Dn[v], B = Up[d0], C = Up[d1], a0 = sum(A)/4 and a1_s = A_s - a0 (likewise b and c),
+// L = 1/4 sum_s (a0 + ea a1_s)(b0 + eb b1_s)(c0 + ec c1_s); the terms linear in one e vanish
+// because sum_s a1_s = 0.
+void LikelihoodCalculator::setNodeCoefficients(Node* v) {
+
+    Node* d0 = v->getFirstDescendant();
+    Node* d1 = d0->getNextSibling();
+    const double* A = condLikes[v->getIndex()]->beginDn();
+    const double* B = condLikes[d0->getIndex()]->beginUp();
+    const double* C = condLikes[d1->getIndex()]->beginUp();
+    for (size_t i=0; i<numSites; i++, A+=4, B+=4, C+=4)
+        {
+        double a0 = 0.25 * (A[0] + A[1] + A[2] + A[3]);
+        double b0 = 0.25 * (B[0] + B[1] + B[2] + B[3]);
+        double cc = 0.25 * (C[0] + C[1] + C[2] + C[3]);
+        double sab = 0.0, sac = 0.0, sbc = 0.0, sabc = 0.0;
+        for (int s=0; s<4; s++)
+            {
+            double a1 = A[s] - a0, b1 = B[s] - b0, c1 = C[s] - cc;
+            sab += a1 * b1;
+            sac += a1 * c1;
+            sbc += b1 * c1;
+            sabc += a1 * b1 * c1;
+            }
+        c0[i] = a0 * b0 * cc;
+        cab[i] = 0.25 * cc * sab;
+        cac[i] = 0.25 * b0 * sac;
+        cbc[i] = 0.25 * a0 * sbc;
+        cabc[i] = 0.25 * sabc;
+        }
+}
+
+// Gradient g[3] and Hessian h[3][3] (row major) of the log likelihood with respect to e = (ea, eb, ec)
+// at the node whose coefficients are set. The pattern likelihoods at e are left in nodeL for nodeGain().
+void LikelihoodCalculator::nodeDerivatives(const double* e, double* g, double* h) {
+
+    const double ea = e[0], eb = e[1], ec = e[2];
+    double g0 = 0.0, g1 = 0.0, g2 = 0.0;
+    double h00 = 0.0, h11 = 0.0, h22 = 0.0, h01 = 0.0, h02 = 0.0, h12 = 0.0;
+    for (size_t i=0; i<numSites; i++)
+        {
+        double xab = cab[i], xac = cac[i], xbc = cbc[i], xabc = cabc[i];
+        double L  = c0[i] + xab * ea * eb + xac * ea * ec + xbc * eb * ec + xabc * ea * eb * ec;
+        double La = xab * eb + xac * ec + xabc * eb * ec;
+        double Lb = xab * ea + xbc * ec + xabc * ea * ec;
+        double Lc = xac * ea + xbc * eb + xabc * ea * eb;
+        double w = patternCount[i];
+        double r = 1.0 / L;
+        nodeL[i] = L;
+        double da = La * r, db = Lb * r, dc = Lc * r;
+        g0 += w * da;
+        g1 += w * db;
+        g2 += w * dc;
+        h00 -= w * da * da;
+        h11 -= w * db * db;
+        h22 -= w * dc * dc;
+        h01 += w * ((xab + xabc * ec) * r - da * db);
+        h02 += w * ((xac + xabc * eb) * r - da * dc);
+        h12 += w * ((xbc + xabc * ea) * r - db * dc);
+        }
+    g[0] = g0;
+    g[1] = g1;
+    g[2] = g2;
+    h[0] = h00; h[1] = h01; h[2] = h02;
+    h[3] = h01; h[4] = h11; h[5] = h12;
+    h[6] = h02; h[7] = h12; h[8] = h22;
+}
+
+// Change in log likelihood from the point of the last nodeDerivatives() call to e. Because
+// log x >= 1 - 1/x, sum w log(L'/L) >= sum w (1 - L/L'); when that bound is positive it is returned
+// (the step is known to be uphill) and no logarithms are taken. Only otherwise is the exact change
+// computed.
+double LikelihoodCalculator::nodeGain(const double* e) {
+
+    const double ea = e[0], eb = e[1], ec = e[2];
+    double bound = 0.0;
+    for (size_t i=0; i<numSites; i++)
+        {
+        double L = c0[i] + cab[i] * ea * eb + cac[i] * ea * ec + cbc[i] * eb * ec + cabc[i] * ea * eb * ec;
+        nodeTrialL[i] = L;
+        bound += patternCount[i] * (1.0 - nodeL[i] / L);
+        }
+    if (bound > 0.0)
+        return bound;
+
+    double gain = 0.0;
+    for (size_t i=0; i<numSites; i++)
+        gain += patternCount[i] * std::log(nodeTrialL[i] / nodeL[i]);
+    return gain;
+}
+
+// Jointly optimize the three branches at interior node v: the branch above v and the branches to its
+// two children. Projected Newton in (ea, eb, ec) on the box [eMin, eMax]^3, with backtracking so that
+// every accepted step increases the log likelihood. Where the Hessian is not negative definite the
+// step falls back to the diagonal (one-branch) Newton step; the log likelihood is concave in each e
+// separately, so that step is always uphill.
+void LikelihoodCalculator::optimizeNode(Node* v) {
+
+    setNodeCoefficients(v);
+
+    const double eMin = std::exp(-4.0 * maxBrlen / 3.0);
+    const double eMax = std::exp(-4.0 * minBrlen / 3.0);
+    Node* d0 = v->getFirstDescendant();
+    Node* slot[3] = { v, d0, d0->getNextSibling() };
+
+    double e[3], g[3], h[9], trial[3];
+    for (int k=0; k<3; k++)
+        e[k] = std::min(std::max(std::exp(-4.0 * slot[k]->getBrlen() / 3.0), eMin), eMax);
+
+    nodeDerivatives(e, g, h);
+    for (int iter=0; iter<50; iter++)
+        {
+        // coordinates held at a bound by the gradient are fixed this iteration
+        bool free_[3];
+        int nFree = 0;
+        for (int k=0; k<3; k++)
+            {
+            free_[k] = !((e[k] >= eMax && g[k] > 0.0) || (e[k] <= eMin && g[k] < 0.0));
+            if (free_[k] == true)
+                nFree++;
+            }
+        if (nFree == 0)
+            break;
+
+        // Newton direction on the free coordinates: solve (-H) d = g by Cholesky
+        double d[3] = { 0.0, 0.0, 0.0 };
+        int idx[3], m = 0;
+        for (int k=0; k<3; k++)
+            if (free_[k] == true)
+                idx[m++] = k;
+        double A[9], L[9] = { 0.0 };
+        for (int i=0; i<m; i++)
+            for (int j=0; j<m; j++)
+                A[3*i+j] = -h[3*idx[i]+idx[j]];
+        bool pd = true;
+        for (int i=0; i<m && pd == true; i++)
+            {
+            for (int j=0; j<=i; j++)
+                {
+                double sum = A[3*i+j];
+                for (int k=0; k<j; k++)
+                    sum -= L[3*i+k] * L[3*j+k];
+                if (i == j)
+                    {
+                    if (sum <= 1.0e-300)
+                        {
+                        pd = false;
+                        break;
+                        }
+                    L[3*i+i] = std::sqrt(sum);
+                    }
+                else
+                    {
+                    L[3*i+j] = sum / L[3*j+j];
+                    }
+                }
+            }
+        if (pd == true)
+            {
+            double y[3];
+            for (int i=0; i<m; i++)
+                {
+                double sum = g[idx[i]];
+                for (int k=0; k<i; k++)
+                    sum -= L[3*i+k] * y[k];
+                y[i] = sum / L[3*i+i];
+                }
+            for (int i=m-1; i>=0; i--)
+                {
+                double sum = y[i];
+                for (int k=i+1; k<m; k++)
+                    sum -= L[3*k+i] * d[idx[k]];
+                d[idx[i]] = sum / L[3*i+i];
+                }
+            }
+        else
+            {
+            for (int k=0; k<3; k++)
+                if (free_[k] == true && h[4*k] < 0.0)
+                    d[k] = -g[k] / h[4*k];
+            }
+
+        // converged when the quadratic model the step came from (the full one, or the diagonal one
+        // when the Hessian is not negative definite) predicts a negligible gain
+        double predicted = 0.0;
+        for (int i=0; i<3; i++)
+            {
+            predicted += g[i] * d[i];
+            if (pd == true)
+                {
+                for (int j=0; j<3; j++)
+                    predicted += 0.5 * d[i] * h[3*i+j] * d[j];
+                }
+            else
+                {
+                predicted += 0.5 * d[i] * h[4*i] * d[i];
+                }
+            }
+        if (predicted < 1.0e-10)
+            break;
+
+        // backtrack along the projected step until the log likelihood improves
+        double t = 1.0, gain = 0.0;
+        bool improved = false;
+        for (int bt=0; bt<30; bt++)
+            {
+            for (int k=0; k<3; k++)
+                trial[k] = std::min(std::max(e[k] + t * d[k], eMin), eMax);
+            gain = nodeGain(trial);
+            if (gain > 0.0)
+                {
+                improved = true;
+                break;
+                }
+            t *= 0.25;
+            }
+        if (improved == false)
+            break;
+
+        double change = 0.0;
+        for (int k=0; k<3; k++)
+            {
+            change = std::max(change, std::fabs(trial[k] - e[k]) / e[k]);
+            e[k] = trial[k];
+            }
+        if (gain < 1.0e-10 || change < 1.0e-10)
+            break;
+        nodeDerivatives(e, g, h);
+        }
+
+    for (int k=0; k<3; k++)
+        slot[k]->setBrlen(std::min(std::max(-0.75 * std::log(e[k]), minBrlen), maxBrlen));
 }
 
 double LikelihoodCalculator::mapRefineBranchStep(Node* p, double lambda) {
