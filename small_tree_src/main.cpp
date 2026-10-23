@@ -1,10 +1,13 @@
+#include <algorithm>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <cstdlib>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 #include <functional>
 #include <map>
 #include <utility>
@@ -20,6 +23,7 @@
 #include "Msg.hpp"
 #include "RandomVariable.hpp"
 #include "Threads.hpp"
+#include "Tree.hpp"
 #include "TreeCache.hpp"
 #include "TreeLikelihoods.hpp"
 #include "TreeNeighborGenerator.hpp"
@@ -126,6 +130,91 @@ int main(int argc, char* argv[]) {
         partitionHashLists.emplace_back(mapTree.partitionString(part), std::move(hashes));
         }
 
+    // Bipartitions beyond the MAP tree's: every other split with posterior probability of at least
+    // 0.10, which takes in every split of the majority-rule consensus and its main competitors. Their
+    // efficiencies are written with the MAP tree's, and all of them are followed through the MCMC runs,
+    // so that the estimate of the MAP tree's probability can be set against the estimates of the split
+    // probabilities from which a consensus tree is built. At most 63 functionals are followed (the MAP
+    // tree and 62 splits), the best supported first.
+    const double minSplitProbability = 0.10;
+    size_t numMapPartitions = partitionHashLists.size();
+    std::vector<double> partitionProbability;
+    for (const auto& [label, hashes] : partitionHashLists)
+        {
+        double p = 0.0;
+        for (uint64_t h : hashes)
+            p += treeCacheNni.getTreeInfo(h)->posteriorProbability;
+        partitionProbability.push_back(p);
+        }
+    {
+        std::unordered_map<uint16_t, double> splitProbability;
+        for (auto& [hash, info] : treeCacheNni.getCache())
+            for (uint16_t part : info->tree->getPartitions())
+                splitProbability[part] += info->posteriorProbability;
+        std::vector<std::pair<double, uint16_t>> extra;
+        for (const auto& [part, p] : splitProbability)
+            if (p >= minSplitProbability && mapTree.getPartitions().count(part) == 0)
+                extra.emplace_back(p, part);
+        std::sort(extra.begin(), extra.end(), [](const auto& a, const auto& b)
+            {
+            return (a.first != b.first) ? a.first > b.first : a.second < b.second;
+            });
+        if (extra.size() + numMapPartitions > 62)
+            extra.resize(62 > numMapPartitions ? 62 - numMapPartitions : 0);
+        std::unordered_map<uint16_t, size_t> slot;
+        for (const auto& [p, part] : extra)
+            {
+            slot[part] = partitionHashLists.size();
+            partitionHashLists.emplace_back(mapTree.partitionString(part), std::vector<uint64_t>());
+            partitionProbability.push_back(p);
+            }
+        if (slot.empty() == false)
+            for (auto& [hash, info] : treeCacheNni.getCache())
+                for (uint16_t part : info->tree->getPartitions())
+                    {
+                    auto it = slot.find(part);
+                    if (it != slot.end())
+                        partitionHashLists[it->second].second.push_back(hash);
+                    }
+    }
+    std::cout << "   Following the MAP tree and " << partitionHashLists.size() << " bipartitions (" << numMapPartitions
+              << " in the MAP tree, " << partitionHashLists.size() - numMapPartitions << " others with probability >= "
+              << minSplitProbability << ")" << std::endl;
+    bool mapIsMajorityRule = true;
+    for (size_t k = 0; k < numMapPartitions; k++)
+        if (!(partitionProbability[k] > 0.5))
+            mapIsMajorityRule = false;
+
+    // The MCMC side of the comparison (Mcmc::writeFunctionalReport): functional 0 is the MAP tree, k >= 1
+    // the k-th bipartition above. The asymptotic variances of the exactly analyzed kernels are filled in
+    // as each move and power is analyzed, and read back for the plain MCMC runs on the same kernel.
+    FunctionalReport functionalReport;
+    functionalReport.labels.push_back("MAPtree");
+    functionalReport.exact.push_back(treeCacheNni.getTreeInfo(mapHash)->posteriorProbability);
+    functionalReport.membership[mapHash] |= 1;
+    for (size_t k = 0; k < partitionHashLists.size(); k++)
+        {
+        functionalReport.labels.push_back(partitionHashLists[k].first);
+        functionalReport.exact.push_back(partitionProbability[k]);
+        for (uint64_t h : partitionHashLists[k].second)
+            functionalReport.membership[h] |= (uint64_t(1) << (k + 1));
+        }
+    std::map<std::pair<std::string, double>, std::vector<double>> analyticVariance;   // (move, power) -> per functional
+    auto setReport = [&](Mcmc& m, const std::string& sampler, const std::string& move, double power, bool analyzedKernel)
+        {
+        functionalReport.sampler = sampler;
+        functionalReport.move    = move;
+        functionalReport.power   = power;
+        functionalReport.asymptoticVariance.assign(functionalReport.labels.size(), std::numeric_limits<double>::quiet_NaN());
+        auto it = analyticVariance.find({ move, power });
+        if (analyzedKernel && it != analyticVariance.end())
+            functionalReport.asymptoticVariance = it->second;
+        if (sampler == "Gibbs")                                   // independent draws: p (1 - p)
+            for (size_t k = 0; k < functionalReport.exact.size(); k++)
+                functionalReport.asymptoticVariance[k] = functionalReport.exact[k] * (1.0 - functionalReport.exact[k]);
+        m.setFunctionalReport(&functionalReport);
+        };
+
     // Release the heavyweight Tree objects now. The MAP-tree partitions were their last consumer: the
     // TBR neighbor generator rebuilds each tree from its compact encoding as it goes, and the kernel
     // analysis and the profile MCMC read only hashes, neighborhoods, and cached likelihoods. The table
@@ -153,6 +242,16 @@ int main(int argc, char* argv[]) {
         throw std::runtime_error("Could not open per-tree state-report file: " + stateReportFileName);
     MarkovChainAnalyzer::writeTsvHeader(diagnosticsOut);
     MarkovChainAnalyzer::writeEfficiencyTsvHeader(effOut);
+    std::string functionalFileName = settings.getOutputFileName() + ".mcmc.functionals.tsv";
+    std::ofstream functionalOut;
+    if (analyticsOnly == false)
+        {
+        functionalOut.open(functionalFileName);
+        if (!functionalOut)
+            throw std::runtime_error("Could not open MCMC functional file: " + functionalFileName);
+        FunctionalReport::writeHeader(functionalOut);
+        functionalReport.out = &functionalOut;
+        }
     LandscapeMixingCollator::writeStateReportHeader(stateOut);
 
     std::vector<double> powers = { 0.0, 0.02, 0.05, 0.1, 0.2, 0.3 };
@@ -187,11 +286,18 @@ int main(int argc, char* argv[]) {
             LandscapeMixingCollator::writeStateReport(stateOut, moveName, power, analyzer, space, mapHash);
             stateOut.flush();
 
-            analyzer.writeEfficiencyTsvRow(effOut, moveName, power, "MAPtree",
-                                           analyzer.efficiencyFor(analyzer.indicatorForTree(mapHash)));
-            for (const auto& [label, hashes] : partitionHashLists)
-                analyzer.writeEfficiencyTsvRow(effOut, moveName, power, label,
-                                               analyzer.efficiencyFor(analyzer.indicatorForTrees(hashes)));
+            double chainLength = static_cast<double>(settings.getChainLength());
+            std::vector<double>& variances = analyticVariance[{ moveName, power }];
+            EfficiencyInfo mapEff = analyzer.efficiencyFor(analyzer.indicatorForTree(mapHash));
+            analyzer.writeEfficiencyTsvRow(effOut, moveName, power, "MAPtree", mapEff, 1, mapIsMajorityRule ? 1 : 0, chainLength);
+            variances.push_back(mapEff.asymptotic_variance);
+            for (size_t k = 0; k < partitionHashLists.size(); k++)
+                {
+                EfficiencyInfo eff = analyzer.efficiencyFor(analyzer.indicatorForTrees(partitionHashLists[k].second));
+                analyzer.writeEfficiencyTsvRow(effOut, moveName, power, partitionHashLists[k].first, eff,
+                                               k < numMapPartitions ? 1 : 0, partitionProbability[k] > 0.5 ? 1 : 0, chainLength);
+                variances.push_back(eff.asymptotic_variance);
+                }
 
             analyzer.writeTsvRow(diagnosticsOut, moveName, power);
             diagnosticsOut.flush();
@@ -217,13 +323,16 @@ int main(int argc, char* argv[]) {
             {
             std::string cfn = ".conv_NNI_" + std::to_string(power);
             Mcmc mcmc(&rng, &treeCacheNni, data, true, cfn, &threads);
+            setReport(mcmc, "MCMC", "NNI", power, true);
             mcmc.run("MCMC (NNI, " + std::to_string(power) + ")", power, 0, nReps);
 
             cfn = ".conv_mc3_NNI_" + std::to_string(power);
             Mcmc mcmcmc(&rng, &treeCacheNni, data, true, cfn, &threads);
+            setReport(mcmcmc, "MCMCMC", "NNI", power, false);
             mcmcmc.run("MCMCMC (NNI, " + std::to_string(power) + ")", power, 0, nReps, 4);
             }
         Mcmc gibbs(&rng, &treeCacheNni, data, true, ".conv_Gibbs", &threads);
+        setReport(gibbs, "Gibbs", "none", 0.0, false);
         gibbs.run("MCMC (Gibbs)", nReps);
         }
     treeCacheNni.freeNeighbors();
@@ -236,6 +345,7 @@ int main(int argc, char* argv[]) {
             {
             std::string cfn = ".conv_NNI2_" + std::to_string(power);
             Mcmc mcmc(&rng, &treeCacheNni2, data, true, cfn, &threads);
+            setReport(mcmc, "MCMC", "NNI2", power, true);
             mcmc.run("MCMC (NNI2, " + std::to_string(power) + ")", power, 0, nReps);
             }
         }
@@ -250,10 +360,12 @@ int main(int argc, char* argv[]) {
             {
             std::string cfn = ".conv_TBR_" + std::to_string(power);
             Mcmc mcmc(&rng, &treeCacheTbr, data, true, cfn, &threads);
+            setReport(mcmc, "MCMC", "TBR", power, true);
             mcmc.run("MCMC (TBR, " + std::to_string(power) + ")", power, 0, nReps);
 
             cfn = ".conv_rTBR_" + std::to_string(power);
             Mcmc rtbr(&rng, &treeCacheTbr, data, true, cfn, &threads);
+            setReport(rtbr, "rTBR", "TBR", power, false);
             rtbr.run("MCMC (rTBR, " + std::to_string(power) + ")", power, 2 * (data->getNumTaxa() - 3), nReps);
             }
         }
@@ -262,6 +374,8 @@ int main(int argc, char* argv[]) {
     basinsOut.close();
     std::cout << "   Basin barrier table written to " << basinTableFileName << "\n";
     std::cout << "   Markov-chain diagnostics written to " << diagnosticsFileName << "\n";
+    if (analyticsOnly == false)
+        std::cout << "   MCMC estimates of the MAP tree and bipartition probabilities written to " << functionalFileName << "\n";
 
     // clean up
     if (originalAlignment->getNumTaxa() > numTaxa)

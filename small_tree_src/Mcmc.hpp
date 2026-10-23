@@ -7,6 +7,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include "RandomVariable.hpp"
@@ -18,6 +19,27 @@ class LikelihoodCalculator;
 class TreeSamples;
 class TreeConvergenceDiagnostics;
 
+// Tree-level features ("functionals") whose MCMC estimates are compared across the replicate runs: the
+// MAP tree (functional 0) and a set of bipartitions. For each run, each functional's frequency in every
+// replicate is computed, and their mean and spread across replicates are written beside the exact
+// posterior probability and, where the run samples a kernel that was analyzed exactly, the standard
+// deviation the asymptotic variance predicts for a run of this length.
+struct FunctionalReport {
+
+    std::vector<std::string>                labels;                 // [0] is "MAPtree"
+    std::vector<double>                     exact;                  // exact posterior probability of each
+    std::unordered_map<uint64_t,uint64_t>   membership;             // tree hash -> bit k: carries functional k
+    std::ofstream*                          out = nullptr;
+
+    // set before each run
+    std::string                             sampler;
+    std::string                             move;
+    double                                  power = 0.0;
+    std::vector<double>                     asymptoticVariance;     // per functional; NaN if not known
+
+    static void                             writeHeader(std::ostream& os);
+};
+
 class Mcmc {
 
     public:
@@ -27,6 +49,7 @@ class Mcmc {
         void                        run(std::string label, double power, int nNeighbors);
         void                        run(std::string label, double power, int nNeighbors, int numRuns);
         void                        run(std::string label, double power, int nNeighbors, int numRuns, int numHeatedChains);
+        void                        setFunctionalReport(FunctionalReport* r) { functionalReport = r; }
 
     private:
         std::pair<int,int>          chooseChains(RandomVariable* r, int numChains);
@@ -50,6 +73,7 @@ class Mcmc {
         void                        returnCalculator(LikelihoodCalculator* calculator);
         bool                        shouldSample(uint32_t cycle);
         void                        writeConvergenceLine(int cycle);
+        void                        writeFunctionalReport(void);
 
         RandomVariable*             rng;
         ThreadPool*                 threadPool;                      // replicate runs in parallel when set
@@ -65,6 +89,7 @@ class Mcmc {
         std::ofstream               convergenceLog;
         std::unique_ptr<TreeConvergenceDiagnostics> diagnostics;     // built once per run, with the log
         std::vector<TreeSamples*>   samples;
+        FunctionalReport*           functionalReport = nullptr;
         std::vector<int>            subsetIndices;
 
         std::vector<LikelihoodCalculator*> allocatedCalculators;

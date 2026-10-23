@@ -4287,17 +4287,35 @@ void MarkovChainAnalyzer::writeEfficiencyTsvHeader(std::ostream& os) {
 
     os << "moveType\tpower\tfunctional\tposteriorProbability\tindependentVariance"
           "\tasymptoticVariance\tefficiency\tintegratedAutocorrelationTime"
-          "\tcgIterations\tcgRelativeResidual\tconverged\n";
+          "\tcgIterations\tcgRelativeResidual\tconverged"
+          "\tinMapTree\tinMajorityRule\tmcseAtChainLength\trelativeMcse\n";
 }
 
-void MarkovChainAnalyzer::writeEfficiencyTsvRow(std::ostream& os, const std::string& moveType, double power, const std::string& functional, const EfficiencyInfo& info) const {
+// The last four columns place a functional against the majority-rule summary: whether it is (a split
+// of) the MAP tree, whether it is in the majority-rule consensus (for the MAP tree itself, whether the
+// consensus is the MAP tree), and the Monte Carlo standard error, sqrt(asymptoticVariance / t), of its
+// estimate from one chain of t = chainLength iterations, absolute and relative to its probability.
+// The efficiency compares the chain with independent sampling of the same functional; the standard
+// error is what decides how well its probability is estimated. "NA" where a column does not apply.
+void MarkovChainAnalyzer::writeEfficiencyTsvRow(std::ostream& os, const std::string& moveType, double power, const std::string& functional, const EfficiencyInfo& info,
+                                                int inMapTree, int inMajorityRule, double chainLength) const {
 
     os << moveType << '\t' << power << '\t' << functional << '\t'
        << info.posterior_mean << '\t' << info.independent_variance << '\t'
        << info.asymptotic_variance << '\t' << info.efficiency << '\t'
        << info.integrated_autocorrelation_time << '\t'
        << info.iterations << '\t' << info.relative_residual << '\t'
-       << (info.converged ? 1 : 0) << '\n';
+       << (info.converged ? 1 : 0);
+    auto flag = [&](int v) { if (v < 0) os << "\tNA"; else os << '\t' << v; };
+    flag(inMapTree);
+    flag(inMajorityRule);
+    double mcse = (chainLength > 0.0 && info.asymptotic_variance >= 0.0) ? std::sqrt(info.asymptotic_variance / chainLength)
+                                                                          : std::numeric_limits<double>::quiet_NaN();
+    if (std::isfinite(mcse))
+        os << '\t' << mcse << '\t' << ((info.posterior_mean > 0.0) ? mcse / info.posterior_mean : std::numeric_limits<double>::quiet_NaN());
+    else
+        os << "\tNA\tNA";
+    os << '\n';
 }
 
 void MarkovChainAnalyzer::writeFullEigenSystemTsv(const std::string& filePrefix, bool writeEigenvectors) const {

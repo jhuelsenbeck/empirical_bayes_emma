@@ -601,6 +601,7 @@ void Mcmc::run(std::string label, int numRuns) {
 
     TreeSamples::combinedPrint(samples);
     TreeSamples::compareSamples(samples, threadPool);
+    writeFunctionalReport();
 
     std::cout << std::endl;
 }
@@ -694,6 +695,7 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns) {
 
     TreeSamples::combinedPrint(samples);
     TreeSamples::compareSamples(samples, threadPool);
+    writeFunctionalReport();
 
     std::cout << std::endl;
 }
@@ -840,6 +842,7 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns, int
 
     TreeSamples::combinedPrint(samples);
     TreeSamples::compareSamples(samples, threadPool);
+    writeFunctionalReport();
     
     // show chain swap acceptance information
     std::cout << "        ";
@@ -860,6 +863,89 @@ void Mcmc::run(std::string label, double power, int nNeighbors, int numRuns, int
         }
 
     std::cout << std::endl;
+}
+
+void FunctionalReport::writeHeader(std::ostream& os) {
+
+    os << "sampler\tmoveType\tpower\tfunctional\texactPosterior\tnumReplicates\tsamplesPerReplicate"
+          "\tmeanEstimate\tsdAcrossReplicates\trmseFromExact\tpredictedSd\tsdRatio"
+          "\tmeanEstimateBurnin\tsdAcrossReplicatesBurnin\trmseFromExactBurnin\tpredictedSdBurnin\tsdRatioBurnin\n";
+}
+
+// For each functional, the frequency with which each replicate sampled it, summarized across the
+// replicates: their mean, standard deviation and root-mean-square error from the exact posterior
+// probability. predictedSd is sqrt(asymptoticVariance / samplesPerReplicate), the standard deviation
+// the exact analysis predicts for one replicate, and sdRatio the observed over the predicted. The
+// prediction is for a chain at stationarity; each replicate starts from a random tree, and for a
+// well-supported functional that start-up transient can dominate the spread. The *Burnin columns repeat
+// the summary with the first 10% of every replicate discarded.
+void Mcmc::writeFunctionalReport(void) {
+
+    FunctionalReport* r = functionalReport;
+    if (r == nullptr || r->out == nullptr || samples.empty())
+        return;
+    size_t K = r->labels.size();
+    size_t R = samples.size();
+    // counts of each functional over the whole replicate, and over its first 10%
+    auto addTree = [&](uint64_t hash, double count, std::vector<std::vector<double>>& into, size_t run)
+        {
+        auto it = r->membership.find(hash);
+        if (it == r->membership.end())
+            return;
+        uint64_t bits = it->second;
+        while (bits != 0)
+            {
+            int k = __builtin_ctzll(bits);
+            bits &= bits - 1;
+            if ((size_t)k < K)
+                into[k][run] += count;
+            }
+        };
+    std::vector<std::vector<double>> total(K, std::vector<double>(R, 0.0)), early(K, std::vector<double>(R, 0.0));
+    double N = (double)samples[0]->getNumSamples();
+    size_t B = (size_t)(0.1 * N);
+    for (size_t run=0; run<R; run++)
+        {
+        for (const auto& [hash, count] : samples[run]->getTreeCounts())
+            addTree(hash, (double)count, total, run);
+        const std::vector<uint64_t>& trace = samples[run]->getTrees();
+        for (size_t t=0; t<B && t<trace.size(); t++)
+            addTree(trace[t], 1.0, early, run);
+        }
+
+    std::ostream& os = *r->out;
+    os << std::setprecision(10);
+    auto summarize = [&](size_t k, bool burnin)
+        {
+        double n = burnin ? N - (double)B : N;
+        std::vector<double> f(R);
+        for (size_t run=0; run<R; run++)
+            f[run] = (n > 0.0) ? (total[k][run] - (burnin ? early[k][run] : 0.0)) / n : 0.0;
+        double mean = 0.0, sq = 0.0, mse = 0.0;
+        for (double x : f)
+            mean += x;
+        mean /= (double)R;
+        for (double x : f)
+            {
+            sq  += (x - mean) * (x - mean);
+            mse += (x - r->exact[k]) * (x - r->exact[k]);
+            }
+        double sd   = (R > 1) ? std::sqrt(sq / (double)(R - 1)) : std::numeric_limits<double>::quiet_NaN();
+        double rmse = std::sqrt(mse / (double)R);
+        double av   = (k < r->asymptoticVariance.size()) ? r->asymptoticVariance[k] : std::numeric_limits<double>::quiet_NaN();
+        double pred = (av >= 0.0 && n > 0.0) ? std::sqrt(av / n) : std::numeric_limits<double>::quiet_NaN();
+        os << '\t' << mean << '\t' << sd << '\t' << rmse << '\t' << pred << '\t'
+           << ((pred > 0.0) ? sd / pred : std::numeric_limits<double>::quiet_NaN());
+        };
+    for (size_t k=0; k<K; k++)
+        {
+        os << r->sampler << '\t' << r->move << '\t' << r->power << '\t' << r->labels[k] << '\t'
+           << r->exact[k] << '\t' << R << '\t' << (long)N;
+        summarize(k, false);
+        summarize(k, true);
+        os << '\n';
+        }
+    os.flush();
 }
 
 bool Mcmc::shouldSample(uint32_t cycle) {
