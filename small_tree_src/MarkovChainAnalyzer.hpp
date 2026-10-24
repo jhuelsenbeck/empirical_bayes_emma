@@ -188,7 +188,8 @@ class MarkovChainAnalyzer {
         Vector                          indicatorForTrees(const std::vector<uint64_t>& treeHashes) const;
         static void                     writeEfficiencyTsvHeader(std::ostream& os);
         void                            writeEfficiencyTsvRow(std::ostream& os, const std::string& moveType, double power, const std::string& functional, const EfficiencyInfo& info,
-                                                              int inMapTree = -1, int inMajorityRule = -1, double chainLength = std::numeric_limits<double>::quiet_NaN()) const;
+                                                              int inMapTree = -1, int inMajorityRule = -1, double chainLength = std::numeric_limits<double>::quiet_NaN(),
+                                                              double relaxationTime = std::numeric_limits<double>::quiet_NaN()) const;
 
         double                          meanHittingTimeToMAP(void) const;
         double                          meanHittingTimeToState(Eigen::Index target) const;

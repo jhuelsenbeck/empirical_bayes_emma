@@ -83,6 +83,27 @@ TreeInfo* Mcmc::chooseInitialTreeInfo(void) {
     if (cache.empty() == true)
         Msg::error("Cannot initialize MCMC from an empty TreeCache");
 
+    // A draw from the exact posterior starts the chain at stationarity, so that its replicates measure
+    // the chain's efficiency alone, without the transient from a start far from the posterior's mass.
+    if (startFromPosterior == true)
+        {
+        if (startTrees.empty() == true)
+            {
+            double cumulative = 0.0;
+            for (auto& [hash, info] : cache)
+                {
+                cumulative += info->posteriorProbability;
+                startTrees.push_back(info);
+                startCdf.push_back(cumulative);
+                }
+            }
+        double u = rng->uniformRv() * startCdf.back();
+        size_t k = (size_t)(std::upper_bound(startCdf.begin(), startCdf.end(), u) - startCdf.begin());
+        if (k >= startTrees.size())
+            k = startTrees.size() - 1;
+        return startTrees[k];
+        }
+
     size_t which = (size_t)(rng->uniformRv() * cache.size());
     if (which >= cache.size())
         which = cache.size() - 1;
@@ -878,7 +899,7 @@ void FunctionalReport::writeHeader(std::ostream& os) {
 // the exact analysis predicts for one replicate, and sdRatio the observed over the predicted. The
 // prediction is for a chain at stationarity; each replicate starts from a random tree, and for a
 // well-supported functional that start-up transient can dominate the spread. The *Burnin columns repeat
-// the summary with the first 10% of every replicate discarded.
+// the summary with the burn-in fraction (-b, default 0.1) of every replicate discarded.
 void Mcmc::writeFunctionalReport(void) {
 
     FunctionalReport* r = functionalReport;
@@ -903,7 +924,7 @@ void Mcmc::writeFunctionalReport(void) {
         };
     std::vector<std::vector<double>> total(K, std::vector<double>(R, 0.0)), early(K, std::vector<double>(R, 0.0));
     double N = (double)samples[0]->getNumSamples();
-    size_t B = (size_t)(0.1 * N);
+    size_t B = (size_t)(UserSettings::userSettings().getBurnin() * N);
     for (size_t run=0; run<R; run++)
         {
         for (const auto& [hash, count] : samples[run]->getTreeCounts())

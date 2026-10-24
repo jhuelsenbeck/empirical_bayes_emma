@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -50,6 +51,7 @@ int main(int argc, char* argv[]) {
     // read the user settings
     UserSettings& settings = UserSettings::userSettings();
     settings.readSettings(argc, argv);
+    rng.setSeed(settings.getSeed());                // the taxon subsample, twists and MCMC all draw from it
     settings.print();
     ensureOutputDirectory(settings.getOutputDirectoryName());
     bool analyticsOnly = false;
@@ -200,8 +202,14 @@ int main(int argc, char* argv[]) {
             functionalReport.membership[h] |= (uint64_t(1) << (k + 1));
         }
     std::map<std::pair<std::string, double>, std::vector<double>> analyticVariance;   // (move, power) -> per functional
+    // -c: the replicates start from trees drawn uniformly ("random"), from the exact posterior
+    // ("posterior"), or, with "both", from uniform draws as usual, after which each plain MCMC run is
+    // repeated from posterior draws (sampler "MCMC-stationary", convergence logs "..._stationary").
+    const bool startPosterior = (settings.getChainStart() == "posterior");
+    const bool startBoth      = (settings.getChainStart() == "both");
     auto setReport = [&](Mcmc& m, const std::string& sampler, const std::string& move, double power, bool analyzedKernel)
         {
+        m.setStartFromPosterior(startPosterior || sampler == "MCMC-stationary");
         functionalReport.sampler = sampler;
         functionalReport.move    = move;
         functionalReport.power   = power;
@@ -287,15 +295,23 @@ int main(int argc, char* argv[]) {
             stateOut.flush();
 
             double chainLength = static_cast<double>(settings.getChainLength());
+            // The relaxation time 1/(1 - SLEM). Where lambda_min is unresolved, 1/(1 - lambda_2), a lower
+            // bound; where lambda_2 is unresolved as well, NaN ("NA"), which is itself a warning.
+            SpectralInfo spec = analyzer.getSpectralInfo();
+            double relaxationTime = spec.relaxation_time;
+            if (!std::isfinite(relaxationTime) && std::isfinite(spec.lambda2_algebraic) && spec.lambda2_algebraic < 1.0)
+                relaxationTime = 1.0 / (1.0 - spec.lambda2_algebraic);
             std::vector<double>& variances = analyticVariance[{ moveName, power }];
             EfficiencyInfo mapEff = analyzer.efficiencyFor(analyzer.indicatorForTree(mapHash));
-            analyzer.writeEfficiencyTsvRow(effOut, moveName, power, "MAPtree", mapEff, 1, mapIsMajorityRule ? 1 : 0, chainLength);
+            analyzer.writeEfficiencyTsvRow(effOut, moveName, power, "MAPtree", mapEff, 1, mapIsMajorityRule ? 1 : 0, chainLength,
+                                           relaxationTime);
             variances.push_back(mapEff.asymptotic_variance);
             for (size_t k = 0; k < partitionHashLists.size(); k++)
                 {
                 EfficiencyInfo eff = analyzer.efficiencyFor(analyzer.indicatorForTrees(partitionHashLists[k].second));
                 analyzer.writeEfficiencyTsvRow(effOut, moveName, power, partitionHashLists[k].first, eff,
-                                               k < numMapPartitions ? 1 : 0, partitionProbability[k] > 0.5 ? 1 : 0, chainLength);
+                                               k < numMapPartitions ? 1 : 0, partitionProbability[k] > 0.5 ? 1 : 0, chainLength,
+                                               relaxationTime);
                 variances.push_back(eff.asymptotic_variance);
                 }
 
@@ -325,6 +341,12 @@ int main(int argc, char* argv[]) {
             Mcmc mcmc(&rng, &treeCacheNni, data, true, cfn, &threads);
             setReport(mcmc, "MCMC", "NNI", power, true);
             mcmc.run("MCMC (NNI, " + std::to_string(power) + ")", power, 0, nReps);
+            if (startBoth)
+                {
+                Mcmc stationary(&rng, &treeCacheNni, data, true, cfn + "_stationary", &threads);
+                setReport(stationary, "MCMC-stationary", "NNI", power, true);
+                stationary.run("MCMC from the posterior (NNI, " + std::to_string(power) + ")", power, 0, nReps);
+                }
 
             cfn = ".conv_mc3_NNI_" + std::to_string(power);
             Mcmc mcmcmc(&rng, &treeCacheNni, data, true, cfn, &threads);
@@ -347,6 +369,12 @@ int main(int argc, char* argv[]) {
             Mcmc mcmc(&rng, &treeCacheNni2, data, true, cfn, &threads);
             setReport(mcmc, "MCMC", "NNI2", power, true);
             mcmc.run("MCMC (NNI2, " + std::to_string(power) + ")", power, 0, nReps);
+            if (startBoth)
+                {
+                Mcmc stationary(&rng, &treeCacheNni2, data, true, cfn + "_stationary", &threads);
+                setReport(stationary, "MCMC-stationary", "NNI2", power, true);
+                stationary.run("MCMC from the posterior (NNI2, " + std::to_string(power) + ")", power, 0, nReps);
+                }
             }
         }
     treeCacheNni2.freeNeighbors();
@@ -362,6 +390,12 @@ int main(int argc, char* argv[]) {
             Mcmc mcmc(&rng, &treeCacheTbr, data, true, cfn, &threads);
             setReport(mcmc, "MCMC", "TBR", power, true);
             mcmc.run("MCMC (TBR, " + std::to_string(power) + ")", power, 0, nReps);
+            if (startBoth)
+                {
+                Mcmc stationary(&rng, &treeCacheTbr, data, true, cfn + "_stationary", &threads);
+                setReport(stationary, "MCMC-stationary", "TBR", power, true);
+                stationary.run("MCMC from the posterior (TBR, " + std::to_string(power) + ")", power, 0, nReps);
+                }
 
             cfn = ".conv_rTBR_" + std::to_string(power);
             Mcmc rtbr(&rng, &treeCacheTbr, data, true, cfn, &threads);

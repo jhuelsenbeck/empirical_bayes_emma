@@ -4288,7 +4288,7 @@ void MarkovChainAnalyzer::writeEfficiencyTsvHeader(std::ostream& os) {
     os << "moveType\tpower\tfunctional\tposteriorProbability\tindependentVariance"
           "\tasymptoticVariance\tefficiency\tintegratedAutocorrelationTime"
           "\tcgIterations\tcgRelativeResidual\tconverged"
-          "\tinMapTree\tinMajorityRule\tmcseAtChainLength\trelativeMcse\n";
+          "\tinMapTree\tinMajorityRule\tmcseAtChainLength\trelativeMcse\trelaxationTimeOverChainLength\n";
 }
 
 // The last four columns place a functional against the majority-rule summary: whether it is (a split
@@ -4296,9 +4296,11 @@ void MarkovChainAnalyzer::writeEfficiencyTsvHeader(std::ostream& os) {
 // consensus is the MAP tree), and the Monte Carlo standard error, sqrt(asymptoticVariance / t), of its
 // estimate from one chain of t = chainLength iterations, absolute and relative to its probability.
 // The efficiency compares the chain with independent sampling of the same functional; the standard
-// error is what decides how well its probability is estimated. "NA" where a column does not apply.
+// error is what decides how well its probability is estimated. Both describe a chain at stationarity,
+// and say little about a chain whose length is not well beyond its relaxation time: the last column is
+// that ratio, which should be well below one for them to apply. "NA" where a column does not apply.
 void MarkovChainAnalyzer::writeEfficiencyTsvRow(std::ostream& os, const std::string& moveType, double power, const std::string& functional, const EfficiencyInfo& info,
-                                                int inMapTree, int inMajorityRule, double chainLength) const {
+                                                int inMapTree, int inMajorityRule, double chainLength, double relaxationTime) const {
 
     os << moveType << '\t' << power << '\t' << functional << '\t'
        << info.posterior_mean << '\t' << info.independent_variance << '\t'
@@ -4315,6 +4317,10 @@ void MarkovChainAnalyzer::writeEfficiencyTsvRow(std::ostream& os, const std::str
         os << '\t' << mcse << '\t' << ((info.posterior_mean > 0.0) ? mcse / info.posterior_mean : std::numeric_limits<double>::quiet_NaN());
     else
         os << "\tNA\tNA";
+    if (chainLength > 0.0 && std::isfinite(relaxationTime))
+        os << '\t' << relaxationTime / chainLength;
+    else
+        os << "\tNA";
     os << '\n';
 }
 

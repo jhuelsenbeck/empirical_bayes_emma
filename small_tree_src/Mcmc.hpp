@@ -50,6 +50,7 @@ class Mcmc {
         void                        run(std::string label, double power, int nNeighbors, int numRuns);
         void                        run(std::string label, double power, int nNeighbors, int numRuns, int numHeatedChains);
         void                        setFunctionalReport(FunctionalReport* r) { functionalReport = r; }
+        void                        setStartFromPosterior(bool tf) { startFromPosterior = tf; }
 
     private:
         std::pair<int,int>          chooseChains(RandomVariable* r, int numChains);
@@ -90,6 +91,9 @@ class Mcmc {
         std::unique_ptr<TreeConvergenceDiagnostics> diagnostics;     // built once per run, with the log
         std::vector<TreeSamples*>   samples;
         FunctionalReport*           functionalReport = nullptr;
+        bool                        startFromPosterior = false;    // initial trees drawn from the exact posterior
+        std::vector<TreeInfo*>      startTrees;                    // the trees, and their cumulative posterior,
+        std::vector<double>         startCdf;                      // for those draws
         std::vector<int>            subsetIndices;
 
         std::vector<LikelihoodCalculator*> allocatedCalculators;
